@@ -1,0 +1,40 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build extension
+        run: node esbuild.js
+
+      - name: Package VSIX
+        run: npx vsce package
+
+      - name: Bundle skills
+        run: tar -czf skills.tar.gz -C skills .
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            klawops-*.vsix
+            skills.tar.gz
+          generate_release_notes: true

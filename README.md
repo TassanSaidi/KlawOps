@@ -76,15 +76,36 @@ Each skill shows an install status icon (`✓` installed / `↓` not installed).
 
 ## Installation
 
-### From VSIX
+### Quick Install (Recommended)
 
-1. Download the `.vsix` file from the [Releases](https://github.com/tonderaisaidi/vscode-klawops/releases) page
-2. In VS Code: **Extensions → ⋯ → Install from VSIX…**
-3. Select the downloaded `.vsix`
+```bash
+curl -fsSL https://raw.githubusercontent.com/TassanSaidi/KlawOps/main/install.sh | bash
+```
 
-### From Marketplace
+This installs:
+- The KlawOps VS Code extension
+- 4 Claude Code commands (`/research_codebase_generic`, `/create_plan_generic`, `/implement_plan`, `/validate_plan`)
+- 4 Claude Code agents (`codebase-analyzer`, `codebase-locator`, `codebase-pattern-finder`, `web-search-researcher`)
 
-Search for **"KlawOps"** in the VS Code Extensions Marketplace.
+> Skills are copied to `~/.claude/commands/` and `~/.claude/agents/`. **Existing files are never overwritten.**
+
+### Manual Install
+
+Download `klawops-<version>.vsix` from the [Releases](https://github.com/TassanSaidi/KlawOps/releases) page, then:
+
+```bash
+code --install-extension klawops-0.1.0.vsix
+```
+
+Or via VS Code: **Extensions → ⋯ → Install from VSIX…**
+
+### Uninstall
+
+```bash
+# Download first (do not pipe — the script prompts for confirmation)
+curl -fsSL https://raw.githubusercontent.com/TassanSaidi/KlawOps/main/uninstall.sh -o uninstall.sh
+bash uninstall.sh
+```
 
 ---
 
