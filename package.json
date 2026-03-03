@@ -1,0 +1,128 @@
+{
+  "name": "klawops",
+  "displayName": "KlawOps",
+  "description": "Claude Code session analytics, cost tracking, and AI workflow skills",
+  "version": "0.1.0",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "publisher": "tonderaisaidi",
+  "icon": "media/icon.png",
+  "galleryBanner": {
+    "color": "#09090b",
+    "theme": "dark"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/tonderaisaidi/klawops"
+  },
+  "keywords": [
+    "claude",
+    "AI",
+    "analytics",
+    "token",
+    "cost",
+    "claude-code"
+  ],
+  "categories": [
+    "Other",
+    "AI"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "klawops",
+          "title": "KlawOps",
+          "icon": "media/icon.png"
+        }
+      ]
+    },
+    "views": {
+      "klawops": [
+        {
+          "id": "klawops.sessions",
+          "name": "Sessions",
+          "type": "tree"
+        },
+        {
+          "id": "klawops.skills",
+          "name": "Skills",
+          "type": "tree"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "klawops.openDashboard",
+        "title": "KlawOps: Open Dashboard",
+        "icon": "$(pulse)"
+      },
+      {
+        "command": "klawops.refreshSessions",
+        "title": "KlawOps: Refresh Sessions",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "klawops.installSkill",
+        "title": "Install Skill",
+        "icon": "$(cloud-download)"
+      },
+      {
+        "command": "klawops.installAllSkills",
+        "title": "KlawOps: Install All Skills"
+      },
+      {
+        "command": "klawops.openSession",
+        "title": "KlawOps: Open Session"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "klawops.refreshSessions",
+          "when": "view == klawops.sessions",
+          "group": "navigation"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "KlawOps",
+      "properties": {
+        "klawops.claudeDir": {
+          "type": "string",
+          "default": "",
+          "description": "Override path to Claude data directory (default: ~/.claude)"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "node esbuild.js",
+    "watch": "node esbuild.js --watch",
+    "package": "vsce package",
+    "lint": "eslint src --ext ts,tsx"
+  },
+  "dependencies": {
+    "date-fns": "^3.6.0",
+    "react": "^18.3.0",
+    "react-dom": "^18.3.0",
+    "recharts": "^3.7.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/react": "^18.3.0",
+    "@types/react-dom": "^18.3.0",
+    "@types/vscode": "^1.85.0",
+    "@typescript-eslint/eslint-plugin": "^7.0.0",
+    "@typescript-eslint/parser": "^7.0.0",
+    "@vscode/vsce": "^2.24.0",
+    "esbuild": "^0.21.0",
+    "eslint": "^8.57.0",
+    "typescript": "^5.4.0"
+  }
+}

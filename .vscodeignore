@@ -1,0 +1,14 @@
+.vscode/**
+src/**
+node_modules/**
+plans/**
+skills_src/**
+esbuild.js
+tsconfig*.json
+webpack.config.js
+.eslintrc.json
+.eslintignore
+thoughts/**
+**/*.map
+**/*.ts
+!out/**/*.js
