@@ -84,6 +84,14 @@
         "command": "klawops.openSkillsAgents",
         "title": "KlawOps: Open Skills & Agents",
         "icon": "$(graph)"
+      },
+      {
+        "command": "klawops.openSkillDetail",
+        "title": "KlawOps: View Skill Details"
+      },
+      {
+        "command": "klawops.registerCustomSkill",
+        "title": "KlawOps: Register Custom Skill/Agent"
       }
     ],
     "menus": {
@@ -115,7 +123,8 @@
     "compile": "node esbuild.js",
     "watch": "node esbuild.js --watch",
     "package": "vsce package",
-    "lint": "eslint src --ext ts,tsx"
+    "lint": "eslint src --ext ts,tsx",
+    "update": "bash update.sh"
   },
   "dependencies": {
     "date-fns": "^3.6.0",

@@ -16,29 +16,9 @@ const extensionConfig = {
 
 const webviewConfigs = [
   {
-    entryPoints: ['src/webview/session/index.tsx'],
+    entryPoints: ['src/webview/unified/index.tsx'],
     bundle:      true,
-    outfile:     'out/webview/session.js',
-    format:      'iife',
-    platform:    'browser',
-    target:      'es2020',
-    sourcemap:   true,
-    define:      { 'process.env.NODE_ENV': '"production"' },
-  },
-  {
-    entryPoints: ['src/webview/dashboard/index.tsx'],
-    bundle:      true,
-    outfile:     'out/webview/dashboard.js',
-    format:      'iife',
-    platform:    'browser',
-    target:      'es2020',
-    sourcemap:   true,
-    define:      { 'process.env.NODE_ENV': '"production"' },
-  },
-  {
-    entryPoints: ['src/webview/skills-agents/index.tsx'],
-    bundle:      true,
-    outfile:     'out/webview/skills-agents.js',
+    outfile:     'out/webview/unified.js',
     format:      'iife',
     platform:    'browser',
     target:      'es2020',

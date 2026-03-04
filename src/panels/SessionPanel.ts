@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { getSessionDetail } from '../data/reader';
 import { getWebviewHtml } from '../utils/webview';
+import { openSkillsAgentsPanel } from './SkillsAgentsPanel';
 
 // Track open panels to avoid duplicates
 const openPanels = new Map<string, vscode.WebviewPanel>();
@@ -32,6 +33,10 @@ export function openSessionPanel(
   panel.webview.html = getWebviewHtml(panel.webview, context, 'webview/session.js');
 
   panel.webview.onDidReceiveMessage(async (msg: { type: string }) => {
+    if (msg.type === 'OPEN_SKILLS_AGENTS') {
+      openSkillsAgentsPanel(context);
+      return;
+    }
     if (msg.type !== 'REQUEST_SESSION') { return; }
     try {
       const session = await getSessionDetail(sessionId);

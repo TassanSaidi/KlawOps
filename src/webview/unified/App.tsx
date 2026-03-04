@@ -1,0 +1,220 @@
+import React, { useState, useEffect, useCallback } from 'react';
+import type { DashboardStats, SessionInfo, SessionDetailV2, SkillAgentStats } from '../../data/types';
+import { C } from './theme';
+import { DashboardTab } from './tabs/DashboardTab';
+import { SessionsTab } from './tabs/SessionsTab';
+import { SkillsTab } from './tabs/SkillsTab';
+
+// Re-export so existing imports from '../App' still work
+export { C };
+
+// ── Tab bar ───────────────────────────────────────────────────────────────────
+
+type Tab = 'dashboard' | 'sessions' | 'skills';
+
+const TABS: { key: Tab; label: string }[] = [
+  { key: 'dashboard', label: 'Dashboard' },
+  { key: 'sessions',  label: 'Sessions'  },
+  { key: 'skills',    label: 'Skills & Agents' },
+];
+
+function TabBar({ active, onChange }: { active: Tab; onChange: (t: Tab) => void }) {
+  return (
+    <div style={{
+      display:        'flex',
+      gap:            '2px',
+      padding:        '8px 16px',
+      borderBottom:   `1px solid ${C.border}`,
+      background:     C.bg,
+      position:       'sticky',
+      top:            0,
+      zIndex:         10,
+    }}>
+      {TABS.map(t => (
+        <button
+          key={t.key}
+          onClick={() => onChange(t.key)}
+          style={{
+            padding:      '5px 14px',
+            borderRadius: '6px',
+            fontSize:     '12px',
+            fontWeight:   500,
+            cursor:       'pointer',
+            border:       'none',
+            background:   active === t.key ? `${C.primary}22` : 'transparent',
+            color:        active === t.key ? C.primary : C.muted,
+            transition:   'background 0.1s, color 0.1s',
+          }}
+        >
+          {t.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+// ── VSCode API singleton ──────────────────────────────────────────────────────
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let _vsc: any = null;
+
+export function postToExtension(msg: object): void {
+  if (_vsc) { _vsc.postMessage(msg); }
+}
+
+// ── Root App ──────────────────────────────────────────────────────────────────
+
+export default function App() {
+  const [activeTab, setActiveTab] = useState<Tab>('dashboard');
+  const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
+  const [skillFilter, setSkillFilter] = useState<string | null>(null);
+
+  // Cached data per tab
+  const [dashStats, setDashStats] = useState<DashboardStats | null>(null);
+  const [dashError, setDashError] = useState<string | null>(null);
+
+  const [sessionList, setSessionList] = useState<{ sessions: SessionInfo[]; total: number } | null>(null);
+  const [sessionListError, setSessionListError] = useState<string | null>(null);
+
+  const [sessionDetail, setSessionDetail] = useState<SessionDetailV2 | null>(null);
+  const [sessionDetailError, setSessionDetailError] = useState<string | null>(null);
+  const [sessionDetailLoading, setSessionDetailLoading] = useState(false);
+
+  const [skillsStats, setSkillsStats] = useState<SkillAgentStats | null>(null);
+  const [skillsError, setSkillsError] = useState<string | null>(null);
+
+  const requestDashboard = useCallback(() => {
+    postToExtension({ type: 'REQUEST_STATS' });
+  }, []);
+
+  const requestSessions = useCallback((query?: string, limit?: number, offset?: number) => {
+    postToExtension({ type: 'REQUEST_SESSION_LIST', query, limit: limit ?? 50, offset: offset ?? 0 });
+  }, []);
+
+  const requestSessionDetail = useCallback((sessionId: string) => {
+    setSessionDetailLoading(true);
+    setSessionDetailError(null);
+    postToExtension({ type: 'REQUEST_SESSION_DETAIL', sessionId });
+  }, []);
+
+  const requestSkillsStats = useCallback((timeRange?: string, filter?: string) => {
+    postToExtension({ type: 'REQUEST_SKILLS_STATS', timeRange, filter });
+  }, []);
+
+  useEffect(() => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    _vsc = (window as any).acquireVsCodeApi?.();
+
+    const handler = (event: MessageEvent) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const msg = event.data as any;
+
+      switch (msg.type) {
+        case 'STATS_DATA':
+          setDashStats(msg.payload);
+          setDashError(null);
+          break;
+        case 'STATS_ERROR':
+          setDashError(msg.message || 'Failed to load stats.');
+          break;
+
+        case 'SESSION_LIST_DATA':
+          setSessionList(msg.payload);
+          setSessionListError(null);
+          break;
+        case 'SESSION_LIST_ERROR':
+          setSessionListError(msg.message || 'Failed to load sessions.');
+          break;
+
+        case 'SESSION_DETAIL_DATA':
+          setSessionDetail(msg.payload);
+          setSessionDetailLoading(false);
+          setSessionDetailError(null);
+          break;
+        case 'SESSION_DETAIL_ERROR':
+          setSessionDetailError(msg.message || 'Failed to load session.');
+          setSessionDetailLoading(false);
+          break;
+
+        case 'SKILLS_STATS_DATA':
+          setSkillsStats(msg.payload);
+          setSkillsError(null);
+          break;
+        case 'SKILLS_STATS_ERROR':
+          setSkillsError(msg.message || 'Failed to load skills stats.');
+          break;
+
+        case 'NAVIGATE':
+          if (msg.tab) { setActiveTab(msg.tab as Tab); }
+          if (msg.sessionId) { setSelectedSessionId(msg.sessionId); }
+          if (msg.skillFilter !== undefined) { setSkillFilter(msg.skillFilter); }
+          break;
+      }
+    };
+
+    window.addEventListener('message', handler);
+
+    // Initial data loads
+    requestDashboard();
+    requestSessions();
+    requestSkillsStats();
+
+    return () => window.removeEventListener('message', handler);
+  }, [requestDashboard, requestSessions, requestSkillsStats]);
+
+  // When selected session changes, load its detail
+  useEffect(() => {
+    if (selectedSessionId) {
+      // Clear previous detail so we show loading state
+      setSessionDetail(null);
+      requestSessionDetail(selectedSessionId);
+    }
+  }, [selectedSessionId, requestSessionDetail]);
+
+  return (
+    <div style={{ background: C.bg, color: C.text, minHeight: '100vh', fontFamily: 'system-ui, -apple-system, sans-serif', fontSize: '13px' }}>
+      <TabBar active={activeTab} onChange={setActiveTab} />
+
+      {activeTab === 'dashboard' && (
+        <DashboardTab
+          stats={dashStats}
+          error={dashError}
+          onRefresh={requestDashboard}
+          onOpenSession={(id) => {
+            setSelectedSessionId(id);
+            setActiveTab('sessions');
+          }}
+        />
+      )}
+
+      {activeTab === 'sessions' && (
+        <SessionsTab
+          list={sessionList}
+          listError={sessionListError}
+          detail={sessionDetail}
+          detailError={sessionDetailError}
+          detailLoading={sessionDetailLoading}
+          selectedId={selectedSessionId}
+          onSearch={requestSessions}
+          onSelectSession={(id) => { setSelectedSessionId(id); }}
+          onBack={() => setSelectedSessionId(null)}
+          onOpenSkillsAgents={(name) => {
+            setSkillFilter(name ?? null);
+            setActiveTab('skills');
+            requestSkillsStats(undefined, name);
+          }}
+        />
+      )}
+
+      {activeTab === 'skills' && (
+        <SkillsTab
+          stats={skillsStats}
+          error={skillsError}
+          initialFilter={skillFilter}
+          onFilterChange={(f) => setSkillFilter(f)}
+          onRequestStats={requestSkillsStats}
+        />
+      )}
+    </div>
+  );
+}

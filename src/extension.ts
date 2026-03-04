@@ -5,10 +5,8 @@ import * as os     from 'os';
 import { SessionTreeProvider } from './providers/SessionTreeProvider';
 import { SkillsTreeProvider, getBundledCommandFilenames }  from './providers/SkillsTreeProvider';
 import { StatusBarProvider }   from './providers/StatusBarProvider';
-import { setClaudeDir, getConfiguredClaudeDir } from './data/reader';
-import { openSessionPanel } from './panels/SessionPanel';
-import { openDashboard, pushStatsUpdate } from './panels/DashboardPanel';
-import { openSkillsAgentsPanel, pushSkillsAgentsUpdate } from './panels/SkillsAgentsPanel';
+import { setClaudeDir, getConfiguredClaudeDir, loadCustomSkills } from './data/reader';
+import { openUnifiedPanel, pushUpdate } from './panels/UnifiedPanel';
 
 export function activate(context: vscode.ExtensionContext): void {
   // ── Configure data directory ──────────────────────────────────────────────
@@ -36,18 +34,27 @@ export function activate(context: vscode.ExtensionContext): void {
   const watcher = vscode.workspace.createFileSystemWatcher(
     new vscode.RelativePattern(vscode.Uri.file(projectsDir), '**/*.jsonl')
   );
-  watcher.onDidCreate(() => { sessionTree.refresh(); statusBar.update(); pushStatsUpdate(); pushSkillsAgentsUpdate(); });
-  watcher.onDidChange(() => { statusBar.update(); pushStatsUpdate(); pushSkillsAgentsUpdate(); });
+  watcher.onDidCreate(() => { sessionTree.refresh(); statusBar.update(); pushUpdate(); });
+  watcher.onDidChange(() => { statusBar.update(); pushUpdate(); });
   context.subscriptions.push(watcher);
+
+  // ── Custom skills file watcher ────────────────────────────────────────────
+  const claudeDir = getConfiguredClaudeDir();
+  const customSkillsWatcher = vscode.workspace.createFileSystemWatcher(
+    new vscode.RelativePattern(vscode.Uri.file(claudeDir), 'klawops-custom-skills.json')
+  );
+  customSkillsWatcher.onDidChange(() => { skillsTree.refresh(); pushUpdate(); });
+  customSkillsWatcher.onDidCreate(() => { skillsTree.refresh(); pushUpdate(); });
+  context.subscriptions.push(customSkillsWatcher);
 
   // ── Commands ──────────────────────────────────────────────────────────────
   context.subscriptions.push(
     vscode.commands.registerCommand('klawops.openDashboard', () => {
-      openDashboard(context);
+      openUnifiedPanel(context, { tab: 'dashboard' });
     }),
 
     vscode.commands.registerCommand('klawops.openSession', (sessionId: string) => {
-      openSessionPanel(context, sessionId);
+      openUnifiedPanel(context, { tab: 'sessions', sessionId });
     }),
 
     vscode.commands.registerCommand('klawops.refreshSessions', () => {
@@ -65,7 +72,40 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
 
     vscode.commands.registerCommand('klawops.openSkillsAgents', () => {
-      openSkillsAgentsPanel(context);
+      openUnifiedPanel(context, { tab: 'skills' });
+    }),
+
+    vscode.commands.registerCommand('klawops.openSkillDetail', (name: string) => {
+      openUnifiedPanel(context, { tab: 'skills', skillFilter: name });
+    }),
+
+    vscode.commands.registerCommand('klawops.registerCustomSkill', async () => {
+      const name = await vscode.window.showInputBox({ prompt: 'Skill/agent name (as used in Claude Code)', placeHolder: 'e.g. my-skill or general-purpose' });
+      if (!name?.trim()) { return; }
+
+      const type = await vscode.window.showQuickPick(['command', 'agent'], { placeHolder: 'Select type' });
+      if (!type) { return; }
+
+      const description = await vscode.window.showInputBox({ prompt: 'Description (optional)', placeHolder: 'What does this skill do?' });
+
+      const configPath = path.join(getConfiguredClaudeDir(), 'klawops-custom-skills.json');
+      let config: { skills: { name: string; type: string; description?: string }[] } = { skills: [] };
+      if (fs.existsSync(configPath)) {
+        try { config = JSON.parse(fs.readFileSync(configPath, 'utf-8')); } catch { /* reset */ }
+      }
+      if (!Array.isArray(config.skills)) { config.skills = []; }
+
+      const trimmedName = name.trim();
+      if (config.skills.find(s => s.name === trimmedName)) {
+        vscode.window.showWarningMessage(`"${trimmedName}" is already registered.`);
+        return;
+      }
+
+      config.skills.push({ name: trimmedName, type, ...(description?.trim() ? { description: description.trim() } : {}) });
+      fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+
+      skillsTree.refresh();
+      vscode.window.showInformationMessage(`Custom ${type} "${trimmedName}" registered. It will appear in metrics once detected in sessions.`);
     }),
   );
 
