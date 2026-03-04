@@ -90,6 +90,25 @@ Each skill shows an install status icon (`✓` installed / `↓` not installed).
 
 ---
 
+### Terminal Mode (No VS Code Required)
+
+KlawOps can run as a standalone web server — no VS Code needed.
+
+```bash
+npm run compile && npm run serve
+```
+
+Opens the dashboard at `http://localhost:3131` automatically.
+
+![Browser dashboard](media/screenshots/browser-dashboard.png)
+
+Options:
+```bash
+node out/server.js --port 3131 --claude-dir ~/.claude --no-open
+```
+
+---
+
 ## Installation
 
 ### Quick Install (Recommended)
