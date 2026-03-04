@@ -58,8 +58,6 @@ The dashboard updates automatically when a new Claude session is written.
 
 The **Skills & Agents** tab tracks every `/skill` and sub-agent invocation across your sessions — cost, token usage, call count, average duration, and last used.
 
-![Skills & Agents in VS Code](media/screenshots/skills-agents-vscode.png)
-
 ![Cost by skill / agent chart](media/screenshots/skills-agents-chart.png)
 
 ![All skills & agents table](media/screenshots/skills-agents-table.png)
