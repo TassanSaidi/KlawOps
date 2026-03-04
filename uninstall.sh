@@ -35,6 +35,21 @@ else
   warn "[skip]    'code' CLI not found — extension not removed"
 fi
 
+# ── Remove terminal server ────────────────────────────────────────────────────
+if [ -f "${HOME}/.local/bin/klawops" ]; then
+  rm -f "${HOME}/.local/bin/klawops"
+  log "[removed] ~/.local/bin/klawops"
+else
+  warn "[skip]    ~/.local/bin/klawops not found"
+fi
+
+if [ -d "${HOME}/.klawops" ]; then
+  rm -rf "${HOME}/.klawops"
+  log "[removed] ~/.klawops/"
+else
+  warn "[skip]    ~/.klawops/ not found"
+fi
+
 # ── Find installed skill files ────────────────────────────────────────────────
 SKILL_COMMANDS=(
   "research_codebase_generic.md"
@@ -100,4 +115,4 @@ else
 fi
 
 echo ""
-log "KlawOps uninstalled. Restart VS Code to complete removal."
+log "KlawOps uninstalled. Restart VS Code to complete extension removal."
