@@ -1,7 +1,8 @@
 const esbuild = require('esbuild');
 
-const args    = process.argv.slice(2);
-const isWatch = args.includes('--watch');
+const args       = process.argv.slice(2);
+const isWatch    = args.includes('--watch');
+const serverOnly = args.includes('--server-only');
 
 const extensionConfig = {
   entryPoints: ['src/extension.ts'],
@@ -27,11 +28,23 @@ const webviewConfigs = [
   },
 ];
 
-const all = [extensionConfig, ...webviewConfigs];
+const serverConfig = {
+  entryPoints: ['src/server/index.ts'],
+  bundle:      true,
+  outfile:     'out/server.js',
+  format:      'cjs',
+  platform:    'node',
+  target:      'node18',
+  sourcemap:   isWatch ? 'inline' : false,
+};
+
+const buildTargets = serverOnly
+  ? [serverConfig]
+  : [extensionConfig, ...webviewConfigs, serverConfig];
 
 if (isWatch) {
-  Promise.all(all.map(c => esbuild.context(c).then(ctx => ctx.watch())))
+  Promise.all(buildTargets.map(c => esbuild.context(c).then(ctx => ctx.watch())))
     .then(() => console.log('Watching…'));
 } else {
-  Promise.all(all.map(c => esbuild.build(c))).catch(() => process.exit(1));
+  Promise.all(buildTargets.map(c => esbuild.build(c))).catch(() => process.exit(1));
 }

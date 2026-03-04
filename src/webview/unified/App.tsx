@@ -58,8 +58,71 @@ function TabBar({ active, onChange }: { active: Tab; onChange: (t: Tab) => void 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let _vsc: any = null;
 
+// ── Standalone (HTTP) transport ───────────────────────────────────────────────
+
+const IS_STANDALONE = !!(window as any).__KLAWOPS_STANDALONE__;
+
+type FetchSpec = {
+  url:          (msg: Record<string, unknown>) => string;
+  responseType: string;
+  errorType:    string;
+};
+
+const FETCH_MAP: Record<string, FetchSpec> = {
+  REQUEST_STATS: {
+    url:          ()  => '/api/stats',
+    responseType: 'STATS_DATA',
+    errorType:    'STATS_ERROR',
+  },
+  REQUEST_SESSION_LIST: {
+    url: (m) => {
+      const q = m.query  ? `&query=${encodeURIComponent(m.query as string)}` : '';
+      const l = m.limit  ? `&limit=${m.limit}`   : '&limit=50';
+      const o = m.offset ? `&offset=${m.offset}` : '&offset=0';
+      return `/api/sessions?${q}${l}${o}`.replace('?&', '?');
+    },
+    responseType: 'SESSION_LIST_DATA',
+    errorType:    'SESSION_LIST_ERROR',
+  },
+  REQUEST_SESSION_DETAIL: {
+    url:          (m) => `/api/sessions/${m.sessionId}`,
+    responseType: 'SESSION_DETAIL_DATA',
+    errorType:    'SESSION_DETAIL_ERROR',
+  },
+  REQUEST_SKILLS_STATS: {
+    url: (m) => {
+      const tr = m.timeRange ? `timeRange=${m.timeRange}` : '';
+      const f  = m.filter    ? `filter=${encodeURIComponent(m.filter as string)}` : '';
+      return `/api/skills?${[tr, f].filter(Boolean).join('&')}`;
+    },
+    responseType: 'SKILLS_STATS_DATA',
+    errorType:    'SKILLS_STATS_ERROR',
+  },
+};
+
+async function standaloneRequest(msg: Record<string, unknown>): Promise<void> {
+  const spec = FETCH_MAP[msg.type as string];
+  if (!spec) { return; }
+  try {
+    const res  = await fetch(spec.url(msg));
+    const data = await res.json();
+    if (!res.ok) { throw new Error(data.error || `HTTP ${res.status}`); }
+    window.dispatchEvent(new MessageEvent('message', {
+      data: { type: spec.responseType, payload: data },
+    }));
+  } catch (err) {
+    window.dispatchEvent(new MessageEvent('message', {
+      data: { type: spec.errorType, message: String(err) },
+    }));
+  }
+}
+
 export function postToExtension(msg: object): void {
-  if (_vsc) { _vsc.postMessage(msg); }
+  if (IS_STANDALONE) {
+    standaloneRequest(msg as Record<string, unknown>);
+  } else if (_vsc) {
+    _vsc.postMessage(msg);
+  }
 }
 
 // ── Root App ──────────────────────────────────────────────────────────────────

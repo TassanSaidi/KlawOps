@@ -121,13 +121,20 @@
   },
   "scripts": {
     "compile": "node esbuild.js",
+    "compile:server": "node esbuild.js --server-only",
     "watch": "node esbuild.js --watch",
+    "serve": "node out/server.js",
     "package": "vsce package",
     "lint": "eslint src --ext ts,tsx",
     "update": "bash update.sh"
   },
+  "bin": {
+    "klawops": "./out/server.js"
+  },
   "dependencies": {
+    "@types/express": "^5.0.6",
     "date-fns": "^3.6.0",
+    "express": "^5.2.1",
     "react": "^18.3.0",
     "react-dom": "^18.3.0",
     "recharts": "^3.7.0"
