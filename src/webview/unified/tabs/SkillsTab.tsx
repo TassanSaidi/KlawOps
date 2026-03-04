@@ -263,7 +263,11 @@ function SkillAgentTable({ entries, activeFilter, onFilterChange }: {
             </thead>
             <tbody>
               {sorted.map((entry, i) => (
-                <tr key={i} style={{ background: i % 2 === 0 ? 'transparent' : 'rgba(255,255,255,0.02)' }}>
+                <tr
+                  key={i}
+                  onClick={() => onFilterChange(entry.name)}
+                  style={{ background: i % 2 === 0 ? 'transparent' : 'rgba(255,255,255,0.02)', cursor: 'pointer' }}
+                >
                   <td style={tdStyle}>
                     <span style={{ fontFamily: 'monospace', fontSize: 12 }}>
                       {entry.type === 'skill' ? `/${entry.name}` : entry.name}

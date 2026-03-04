@@ -482,7 +482,7 @@ function SessionRow({
         <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '3px' }}>
           <span style={{ fontSize: '12px', fontWeight: 500, color: C.text }}>{session.projectName}</span>
           {models.map(m => (
-            <Badge key={m} text={m.includes('opus') ? 'Opus' : m.includes('sonnet') ? 'Sonnet' : 'Haiku'} color={modelColor(m)} />
+            <Badge key={m} text={m} color={modelColor(m)} />
           ))}
         </div>
         <div style={{ display: 'flex', gap: '10px', fontSize: '11px', color: C.muted }}>
@@ -542,12 +542,13 @@ export function SessionsTab({
   // ── Detail overlay ────────────────────────────────────────────────────────
   if (selectedId) {
     return (
-      <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+      <div>
         {/* Back bar */}
         <div style={{
           display: 'flex', alignItems: 'center', gap: '8px',
           padding: '10px 16px', borderBottom: `1px solid ${C.border}`,
-          background: C.bg, flexShrink: 0,
+          background: C.bg,
+          position: 'sticky', top: '44px', zIndex: 9,
         }}>
           <button
             onClick={onBack}
@@ -572,7 +573,7 @@ export function SessionsTab({
         </div>
 
         {/* Detail content */}
-        <div style={{ flex: 1, overflowY: 'auto' }}>
+        <div>
           {detailLoading && (
             <div style={{ display: 'flex', justifyContent: 'center', padding: '60px 20px' }}>
               <div style={{ width: '24px', height: '24px', borderRadius: '50%', border: `2px solid ${C.border}`, borderTopColor: C.primary, animation: 'spin 0.8s linear infinite' }} />

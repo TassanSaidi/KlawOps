@@ -74,6 +74,25 @@ Each skill shows an install status icon (`✓` installed / `↓` not installed).
 
 ---
 
+## Screenshots
+
+### Dashboard
+![Dashboard overview](media/screenshots/dashboard.png)
+
+### Skills & Agents
+![Skills & Agents in VS Code](media/screenshots/skills-agents-vscode.png)
+
+![Cost by skill / agent chart](media/screenshots/skills-agents-chart.png)
+
+![Skills & Agents table](media/screenshots/skills-agents-table.png)
+
+![Filtered skill view](media/screenshots/skills-filtered.png)
+
+### Session Detail
+![Session detail with agent hierarchy](media/screenshots/session-detail.png)
+
+---
+
 ## Installation
 
 ### Quick Install (Recommended)

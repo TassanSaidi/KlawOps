@@ -378,11 +378,12 @@ function parseSessionSkillAgents(
       const msg = JSON.parse(line) as SessionMessage & { isMeta?: boolean };
 
       if (msg.type === 'user') {
-        if (!msg.isMeta && typeof msg.message?.content === 'string') {
-          const m = SKILL_RX.exec(msg.message.content);
+        if (!msg.isMeta) {
+          const text = getMessageText(msg.message?.content);
+          const m = SKILL_RX.exec(text);
           if (m) { flushSkill(); openSkill = m[1].trim(); continue; }
+          flushSkill();
         }
-        if (!msg.isMeta) { flushSkill(); }
       }
 
       if (msg.type === 'assistant' && msg.message?.usage) {
@@ -803,6 +804,22 @@ export function getDashboardStats(): DashboardStats {
 
 const SKILL_RX = /<command-name>\/([^<]+)<\/command-name>/;
 
+/** Extract plain text from a message content that may be a string or an array of content blocks. */
+function getMessageText(content: unknown): string {
+  if (typeof content === 'string') { return content; }
+  if (Array.isArray(content)) {
+    return content
+      .map((c: unknown) => {
+        if (!c || typeof c !== 'object') { return ''; }
+        const block = c as Record<string, unknown>;
+        if (block.type === 'text' && typeof block.text === 'string') { return block.text; }
+        return '';
+      })
+      .join('\n');
+  }
+  return '';
+}
+
 type AgentProgressMsg = SessionMessage & {
   data?: { type?: string; agentId?: string };
   parentToolUseID?: string;
@@ -928,16 +945,17 @@ export function getSkillAgentStats(opts?: SkillAgentStatsOptions): SkillAgentSta
           const msg = JSON.parse(line) as SessionMessage & { isMeta?: boolean };
 
           if (msg.type === 'user') {
-            if (!msg.isMeta && typeof msg.message?.content === 'string') {
-              const m = SKILL_RX.exec(msg.message.content);
+            if (!msg.isMeta) {
+              const text = getMessageText(msg.message?.content);
+              const m = SKILL_RX.exec(text);
               if (m) {
                 flushSkill();
                 openSkill  = m[1].trim();
                 openSkillTs = msg.timestamp || '';
                 continue;
               }
+              flushSkill();
             }
-            if (!msg.isMeta) { flushSkill(); }
           }
 
           if (msg.type === 'assistant' && msg.message?.usage) {
@@ -1132,8 +1150,9 @@ function buildAgentTree(
       const msg = JSON.parse(line) as SessionMessage & { isMeta?: boolean };
 
       if (msg.type === 'user') {
-        if (!msg.isMeta && typeof msg.message?.content === 'string') {
-          const m = SKILL_RX.exec(msg.message.content);
+        if (!msg.isMeta) {
+          const text = getMessageText(msg.message?.content);
+          const m = SKILL_RX.exec(text);
           if (m) {
             const name = m[1].trim();
             if (!skillMap.has(name)) {
