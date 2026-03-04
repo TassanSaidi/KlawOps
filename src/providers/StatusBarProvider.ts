@@ -40,7 +40,7 @@ export class StatusBarProvider implements vscode.Disposable {
         return;
       }
       const cost   = formatCost(session.estimatedCost);
-      const tokens = formatTokens(session.totalInputTokens + session.totalOutputTokens);
+      const tokens = formatTokens(session.totalInputTokens + session.totalOutputTokens + session.totalCacheReadTokens + session.totalCacheWriteTokens);
       this.item.text = `$(pulse) ${cost} | ${tokens}`;
       this.item.tooltip = [
         `KlawOps — most recent session`,

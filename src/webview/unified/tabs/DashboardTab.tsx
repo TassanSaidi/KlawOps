@@ -17,9 +17,10 @@ function formatTokens(n: number): string {
 }
 
 function formatCost(n: number): string {
-  if (n >= 1000) { return `$${(n / 1000).toFixed(1)}K`; }
-  if (n >= 1)    { return `$${n.toFixed(2)}`; }
-  return `$${n.toFixed(4)}`;
+  if (n >= 1000)   { return `$${(n / 1000).toFixed(1)}K`; }
+  if (n >= 1)      { return `$${n.toFixed(2)}`; }
+  if (n >= 0.0001) { return `$${n.toFixed(4)}`; }
+  return '$0.00';
 }
 
 function formatDuration(ms: number): string {
@@ -258,7 +259,7 @@ function ActivityHeatmap({ data }: { data: DailyActivity[] }) {
 function PeakHours({ data }: { data: Record<string, number> }) {
   const chartData = Array.from({ length: 24 }, (_, i) => ({
     hour:  i === 0 ? '12a' : i < 12 ? `${i}a` : i === 12 ? '12p' : `${i - 12}p`,
-    count: data[i.toString()] || 0,
+    count: data[i.toString().padStart(2, '0')] || data[i.toString()] || 0,
   }));
   return (
     <Card>

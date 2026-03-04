@@ -624,14 +624,30 @@ export function SessionsTab({
             {query ? 'No sessions match your search.' : 'No sessions found.'}
           </div>
         ) : (
-          sessions.map(session => (
-            <SessionRow
-              key={session.id}
-              session={session}
-              selected={false}
-              onClick={() => onSelectSession(session.id)}
-            />
-          ))
+          <>
+            {sessions.map(session => (
+              <SessionRow
+                key={session.id}
+                session={session}
+                selected={false}
+                onClick={() => onSelectSession(session.id)}
+              />
+            ))}
+            {list && sessions.length < list.total && (
+              <div style={{ padding: '12px 16px', textAlign: 'center' }}>
+                <button
+                  onClick={() => onSearch(query || undefined, sessions.length + 50)}
+                  style={{
+                    padding: '6px 16px', borderRadius: '6px', fontSize: '12px',
+                    color: C.primary, background: `${C.primary}11`,
+                    border: `1px solid ${C.primary}44`, cursor: 'pointer',
+                  }}
+                >
+                  Load more ({list.total - sessions.length} remaining)
+                </button>
+              </div>
+            )}
+          </>
         )}
       </div>
     </div>
