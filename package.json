@@ -79,12 +79,22 @@
       {
         "command": "klawops.openSession",
         "title": "KlawOps: Open Session"
+      },
+      {
+        "command": "klawops.openSkillsAgents",
+        "title": "KlawOps: Open Skills & Agents",
+        "icon": "$(graph)"
       }
     ],
     "menus": {
       "view/title": [
         {
           "command": "klawops.refreshSessions",
+          "when": "view == klawops.sessions",
+          "group": "navigation"
+        },
+        {
+          "command": "klawops.openSkillsAgents",
           "when": "view == klawops.sessions",
           "group": "navigation"
         }

@@ -35,6 +35,16 @@ const webviewConfigs = [
     sourcemap:   true,
     define:      { 'process.env.NODE_ENV': '"production"' },
   },
+  {
+    entryPoints: ['src/webview/skills-agents/index.tsx'],
+    bundle:      true,
+    outfile:     'out/webview/skills-agents.js',
+    format:      'iife',
+    platform:    'browser',
+    target:      'es2020',
+    sourcemap:   true,
+    define:      { 'process.env.NODE_ENV': '"production"' },
+  },
 ];
 
 const all = [extensionConfig, ...webviewConfigs];

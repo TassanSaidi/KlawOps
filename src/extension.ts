@@ -8,6 +8,7 @@ import { StatusBarProvider }   from './providers/StatusBarProvider';
 import { setClaudeDir, getConfiguredClaudeDir } from './data/reader';
 import { openSessionPanel } from './panels/SessionPanel';
 import { openDashboard, pushStatsUpdate } from './panels/DashboardPanel';
+import { openSkillsAgentsPanel, pushSkillsAgentsUpdate } from './panels/SkillsAgentsPanel';
 
 export function activate(context: vscode.ExtensionContext): void {
   // ── Configure data directory ──────────────────────────────────────────────
@@ -35,8 +36,8 @@ export function activate(context: vscode.ExtensionContext): void {
   const watcher = vscode.workspace.createFileSystemWatcher(
     new vscode.RelativePattern(vscode.Uri.file(projectsDir), '**/*.jsonl')
   );
-  watcher.onDidCreate(() => { sessionTree.refresh(); statusBar.update(); pushStatsUpdate(); });
-  watcher.onDidChange(() => { statusBar.update(); pushStatsUpdate(); });
+  watcher.onDidCreate(() => { sessionTree.refresh(); statusBar.update(); pushStatsUpdate(); pushSkillsAgentsUpdate(); });
+  watcher.onDidChange(() => { statusBar.update(); pushStatsUpdate(); pushSkillsAgentsUpdate(); });
   context.subscriptions.push(watcher);
 
   // ── Commands ──────────────────────────────────────────────────────────────
@@ -61,6 +62,10 @@ export function activate(context: vscode.ExtensionContext): void {
 
     vscode.commands.registerCommand('klawops.installAllSkills', () => {
       skillsTree.installAll();
+    }),
+
+    vscode.commands.registerCommand('klawops.openSkillsAgents', () => {
+      openSkillsAgentsPanel(context);
     }),
   );
 

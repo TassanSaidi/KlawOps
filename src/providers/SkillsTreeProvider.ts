@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import * as fs    from 'fs';
 import * as path  from 'path';
 import * as os    from 'os';
+import { getSkillAgentStats } from '../data/reader';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -17,13 +18,28 @@ interface SkillMeta {
 // ── Tree item ─────────────────────────────────────────────────────────────────
 
 class SkillItem extends vscode.TreeItem {
-  constructor(public readonly meta: SkillMeta) {
+  constructor(
+    public readonly meta: SkillMeta,
+    stats?: { invocations: number; totalCost: number; totalTokens: number },
+  ) {
     super(meta.name, vscode.TreeItemCollapsibleState.None);
-    this.description  = `${meta.type} · ${meta.installed ? 'installed' : 'not installed'}`;
+    const status  = meta.installed ? 'installed' : 'not installed';
+    const usageParts: string[] = [];
+    if (stats && stats.invocations > 0) {
+      usageParts.push(`${stats.invocations}×`);
+      if (stats.totalCost > 0) { usageParts.push(`$${stats.totalCost.toFixed(3)}`); }
+      if (stats.totalTokens > 0) {
+        const t = stats.totalTokens;
+        usageParts.push(t >= 1_000_000 ? `${(t/1_000_000).toFixed(1)}M tok` : t >= 1_000 ? `${(t/1_000).toFixed(1)}K tok` : `${t} tok`);
+      }
+    }
+    this.description  = usageParts.length > 0
+      ? `${usageParts.join(' · ')} · ${status}`
+      : `${meta.type} · ${status}`;
     this.tooltip      = meta.description;
     this.iconPath     = new vscode.ThemeIcon(meta.installed ? 'check' : 'cloud-download');
     this.contextValue = meta.installed ? 'skill-installed' : 'skill-available';
-    this.command = undefined; // leaf — no default click action
+    this.command = undefined;
   }
 }
 
@@ -95,7 +111,14 @@ export class SkillsTreeProvider implements vscode.TreeDataProvider<SkillItem> {
   getTreeItem(item: SkillItem): SkillItem { return item; }
 
   getChildren(): SkillItem[] {
-    return loadSkillMetas(this.context).map(m => new SkillItem(m));
+    const metas = loadSkillMetas(this.context);
+    const statsMap = new Map<string, { invocations: number; totalCost: number; totalTokens: number }>();
+    try {
+      for (const e of getSkillAgentStats().entries) {
+        if (e.type === 'skill') { statsMap.set(e.name, { invocations: e.invocations, totalCost: e.totalCost, totalTokens: e.totalTokens }); }
+      }
+    } catch { /* ignore — show skills without stats on error */ }
+    return metas.map(m => new SkillItem(m, statsMap.get(m.name)));
   }
 
   async install(item: vscode.TreeItem): Promise<void> {

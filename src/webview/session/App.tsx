@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import type { SessionDetail, SessionMessageDisplay, CompactionInfo } from '../../data/types';
+import type { SessionDetail, SessionMessageDisplay, CompactionInfo, SessionSkillEntry, SessionAgentEntry } from '../../data/types';
 import { formatCost, formatDuration, formatTokens } from '../../lib/format';
 
 // ── Theme ─────────────────────────────────────────────────────────────────────
@@ -94,12 +94,21 @@ function Badge({ text, color }: { text: string; color?: string }) {
   );
 }
 
+// ── vscode API (singleton) ────────────────────────────────────────────────────
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let _vsc: any = null;
+function postToExtension(msg: object) { if (_vsc) { _vsc.postMessage(msg); } }
+
 // ── Message item ──────────────────────────────────────────────────────────────
 
+const MSG_LIMIT = 500;
+
 function MessageItem({ msg }: { msg: SessionMessageDisplay }) {
-  const isUser   = msg.role === 'user';
-  const content  = msg.content.length > 500 ? msg.content.slice(0, 500) + '…' : msg.content;
-  const tokens   = msg.usage ? msg.usage.input_tokens + msg.usage.output_tokens : 0;
+  const [expanded, setExpanded] = useState(false);
+  const isUser      = msg.role === 'user';
+  const isTruncated = msg.content.length > MSG_LIMIT;
+  const content     = expanded || !isTruncated ? msg.content : msg.content.slice(0, MSG_LIMIT) + '…';
+  const tokens      = msg.usage ? msg.usage.input_tokens + msg.usage.output_tokens : 0;
 
   return (
     <div style={{ display: 'flex', gap: '10px' }}>
@@ -141,6 +150,16 @@ function MessageItem({ msg }: { msg: SessionMessageDisplay }) {
         <p style={{ fontSize: '12px', color: '#d4d4d8', whiteSpace: 'pre-wrap', wordBreak: 'break-word', lineHeight: '1.6' }}>
           {content}
         </p>
+
+        {/* Expand / collapse */}
+        {isTruncated && (
+          <button
+            onClick={() => setExpanded(e => !e)}
+            style={{ fontSize: '10px', color: C.primary, background: 'none', border: 'none', cursor: 'pointer', padding: '2px 0', marginTop: '2px' }}
+          >
+            {expanded ? '▲ Show less' : `▼ Show ${(msg.content.length - MSG_LIMIT).toLocaleString()} more chars`}
+          </button>
+        )}
 
         {/* Tool call badges */}
         {msg.toolCalls && msg.toolCalls.length > 0 && (
@@ -258,6 +277,75 @@ function MetadataCard({ session }: { session: SessionDetail }) {
   );
 }
 
+// ── Skills & Agents session card ──────────────────────────────────────────────
+
+const agentColor = '#6366f1';
+
+function SkillsAgentsSessionCard({
+  skills,
+  agents,
+}: {
+  skills: SessionSkillEntry[];
+  agents: SessionAgentEntry[];
+}) {
+  if (skills.length === 0 && agents.length === 0) { return null; }
+
+  const rowStyle: React.CSSProperties = {
+    display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+    padding: '5px 8px', borderRadius: '5px', cursor: 'pointer',
+    transition: 'background 0.1s',
+  };
+
+  function openSkillsPanel() { postToExtension({ type: 'OPEN_SKILLS_AGENTS' }); }
+
+  return (
+    <Card title="Skills & Agents Used">
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}>
+        {skills.map(s => (
+          <div
+            key={s.name}
+            style={rowStyle}
+            onClick={openSkillsPanel}
+            title="Click to open Skills & Agents panel"
+            onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = 'rgba(255,255,255,0.05)'; }}
+            onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = 'transparent'; }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: '6px', minWidth: 0 }}>
+              <span style={{ fontSize: '10px', padding: '1px 5px', borderRadius: '3px', background: `${C.primary}20`, color: C.primary, fontWeight: 600 }}>skill</span>
+              <span style={{ fontSize: '11px', fontFamily: 'monospace', color: C.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>/{s.name}</span>
+              {s.invocations > 1 && <span style={{ fontSize: '10px', color: C.muted }}>{s.invocations}×</span>}
+            </div>
+            <div style={{ display: 'flex', gap: '8px', flexShrink: 0, alignItems: 'center' }}>
+              {s.tokens > 0 && <span style={{ fontSize: '10px', color: C.muted, fontFamily: 'monospace' }}>{formatTokens(s.tokens)}</span>}
+              {s.cost > 0 && <span style={{ fontSize: '10px', color: C.text, fontFamily: 'monospace' }}>{formatCost(s.cost)}</span>}
+            </div>
+          </div>
+        ))}
+        {agents.map(a => (
+          <div
+            key={a.type}
+            style={rowStyle}
+            onClick={openSkillsPanel}
+            title="Click to open Skills & Agents panel"
+            onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = 'rgba(255,255,255,0.05)'; }}
+            onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = 'transparent'; }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: '6px', minWidth: 0 }}>
+              <span style={{ fontSize: '10px', padding: '1px 5px', borderRadius: '3px', background: `${agentColor}20`, color: agentColor, fontWeight: 600 }}>agent</span>
+              <span style={{ fontSize: '11px', fontFamily: 'monospace', color: C.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{a.type}</span>
+              {a.invocations > 1 && <span style={{ fontSize: '10px', color: C.muted }}>{a.invocations}×</span>}
+            </div>
+            <div style={{ display: 'flex', gap: '8px', flexShrink: 0, alignItems: 'center' }}>
+              {a.tokens > 0 && <span style={{ fontSize: '10px', color: C.muted, fontFamily: 'monospace' }}>{formatTokens(a.tokens)}</span>}
+              {a.cost > 0 && <span style={{ fontSize: '10px', color: agentColor, fontFamily: 'monospace' }}>{formatCost(a.cost)}</span>}
+            </div>
+          </div>
+        ))}
+      </div>
+    </Card>
+  );
+}
+
 // ── Session view ──────────────────────────────────────────────────────────────
 
 function SessionView({ session }: { session: SessionDetail }) {
@@ -321,6 +409,10 @@ function SessionView({ session }: { session: SessionDetail }) {
 
         {/* Right: sidebar */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+          <SkillsAgentsSessionCard
+            skills={session.skillsInSession || []}
+            agents={session.agentsInSession || []}
+          />
           <TokenBreakdown session={session} />
           {topTools.length > 0 && <ToolsUsed tools={topTools} />}
           {compactionCount > 0 && <CompactionCard compaction={compaction} />}
@@ -367,6 +459,7 @@ export default function App() {
 
   useEffect(() => {
     const vsc = acquireVsCodeApi();
+    _vsc = vsc;
 
     const handler = (event: MessageEvent) => {
       const msg = event.data as { type: string; payload?: SessionDetail; message?: string };

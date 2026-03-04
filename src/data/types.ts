@@ -145,8 +145,24 @@ export interface SessionInfo {
   compaction: CompactionInfo;
 }
 
+export interface SessionSkillEntry {
+  name: string;
+  invocations: number;
+  tokens: number;
+  cost: number;
+}
+
+export interface SessionAgentEntry {
+  type: string;
+  invocations: number;
+  tokens: number;
+  cost: number;
+}
+
 export interface SessionDetail extends SessionInfo {
   messages: SessionMessageDisplay[];
+  skillsInSession: SessionSkillEntry[];
+  agentsInSession: SessionAgentEntry[];
 }
 
 export interface SessionMessageDisplay {
@@ -171,4 +187,24 @@ export interface DashboardStats {
   longestSession: LongestSession;
   projectCount: number;
   recentSessions: SessionInfo[];
+}
+
+export interface SkillAgentEntry {
+  name: string;
+  type: 'skill' | 'agent';
+  invocations: number;
+  totalCost: number;
+  avgCost: number;
+  totalTokens: number;
+  lastUsed: string;
+}
+
+export interface SkillAgentStats {
+  totalInvocations: number;
+  totalCost: number;
+  totalAgentTokens: number;
+  totalSkillTokens: number;
+  skillCount: number;
+  agentCount: number;
+  entries: SkillAgentEntry[];
 }
