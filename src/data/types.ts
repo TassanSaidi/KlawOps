@@ -189,6 +189,29 @@ export interface DashboardStats {
   recentSessions: SessionInfo[];
 }
 
+export interface SubAgentMetric {
+  type: string;
+  spawns: number;
+  totalTokens: number;
+  totalCost: number;
+  avgTokens: number;
+}
+
+export interface SessionMetric {
+  sessionId: string;
+  projectName: string;
+  timestamp: string;
+  invocations: number;
+  tokens: number;
+  cost: number;
+  duration: number;
+}
+
+export interface SkillAgentStatsOptions {
+  timeRange?: '7d' | '30d' | '90d' | 'all';
+  filter?: string;
+}
+
 export interface SkillAgentEntry {
   name: string;
   type: 'skill' | 'agent';
@@ -196,7 +219,14 @@ export interface SkillAgentEntry {
   totalCost: number;
   avgCost: number;
   totalTokens: number;
+  avgTokens: number;
   lastUsed: string;
+  sessionCount: number;
+  totalDuration: number;
+  avgDuration: number;
+  subAgentSpawns: number;
+  subAgentBreakdown: SubAgentMetric[];
+  sessionBreakdown: SessionMetric[];
 }
 
 export interface SkillAgentStats {
@@ -207,4 +237,71 @@ export interface SkillAgentStats {
   skillCount: number;
   agentCount: number;
   entries: SkillAgentEntry[];
+}
+
+// ── Agent tree (for session detail Overview tab) ───────────────────────────────
+
+export interface AgentTreeNode {
+  id: string;
+  label: string;
+  type: 'root' | 'agent' | 'skill';
+  tokens: number;
+  cost: number;
+  model?: string;
+  duration?: number;
+  invocations?: number;   // skills only
+  children: AgentTreeNode[];
+}
+
+// ── Tool metrics (per session detail) ────────────────────────────────────────
+
+export interface ToolMetricEntry {
+  name: string;
+  count: number;
+  totalDurationMs: number;
+  avgDurationMs: number;
+  estimatedTokens: number;  // rough: (input JSON chars + output chars) / 4
+}
+
+export interface ToolMetrics {
+  totalDurationMs: number;  // wall-clock time spent waiting for tools
+  estimatedTokens: number;  // total estimated tokens for all tool I/O
+  byTool: ToolMetricEntry[];
+}
+
+// ── Session detail with agent tree ───────────────────────────────────────────
+
+export interface SessionDetailV2 extends SessionDetail {
+  agentTree: AgentTreeNode;
+  toolMetrics: ToolMetrics;
+}
+
+// ── Unified message types ─────────────────────────────────────────────────────
+
+export type UnifiedRequest =
+  | { type: 'REQUEST_STATS' }
+  | { type: 'REQUEST_SESSION_LIST'; query?: string; limit?: number; offset?: number }
+  | { type: 'REQUEST_SESSION_DETAIL'; sessionId: string }
+  | { type: 'REQUEST_SKILLS_STATS'; timeRange?: string; filter?: string };
+
+export type UnifiedResponse =
+  | { type: 'STATS_DATA'; payload: DashboardStats }
+  | { type: 'STATS_ERROR'; message: string }
+  | { type: 'SESSION_LIST_DATA'; payload: { sessions: SessionInfo[]; total: number } }
+  | { type: 'SESSION_LIST_ERROR'; message: string }
+  | { type: 'SESSION_DETAIL_DATA'; payload: SessionDetailV2 }
+  | { type: 'SESSION_DETAIL_ERROR'; message: string }
+  | { type: 'SKILLS_STATS_DATA'; payload: SkillAgentStats }
+  | { type: 'SKILLS_STATS_ERROR'; message: string }
+  | { type: 'NAVIGATE'; tab: string; sessionId?: string; skillFilter?: string };
+
+export interface CustomSkillConfig {
+  name: string;
+  type: 'command' | 'agent';
+  description?: string;
+  matchPattern?: string;
+}
+
+export interface CustomSkillsFile {
+  skills: CustomSkillConfig[];
 }

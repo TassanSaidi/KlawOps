@@ -9,6 +9,8 @@ import type {
   ProjectInfo,
   SessionInfo,
   SessionDetail,
+  SessionDetailV2,
+  AgentTreeNode,
   SessionMessageDisplay,
   DashboardStats,
   DailyActivity,
@@ -17,8 +19,15 @@ import type {
   SessionMessage,
   SkillAgentStats,
   SkillAgentEntry,
+  SkillAgentStatsOptions,
+  SubAgentMetric,
+  SessionMetric,
   SessionSkillEntry,
   SessionAgentEntry,
+  CustomSkillConfig,
+  CustomSkillsFile,
+  ToolMetrics,
+  ToolMetricEntry,
 } from './types';
 
 // ── Data directory ────────────────────────────────────────────────────────────
@@ -38,6 +47,15 @@ export function getConfiguredClaudeDir(): string {
 
 function getClaudeDir(): string {
   return _claudeDir ?? path.join(os.homedir(), '.claude');
+}
+
+export function loadCustomSkills(): CustomSkillConfig[] {
+  const configPath = path.join(getConfiguredClaudeDir(), 'klawops-custom-skills.json');
+  if (!fs.existsSync(configPath)) { return []; }
+  try {
+    const raw = JSON.parse(fs.readFileSync(configPath, 'utf-8')) as CustomSkillsFile;
+    return raw.skills || [];
+  } catch { return []; }
 }
 
 function getProjectsDir(): string {
@@ -790,175 +808,238 @@ type AgentProgressMsg = SessionMessage & {
   parentToolUseID?: string;
 };
 
-export function getSkillAgentStats(): SkillAgentStats {
-  const projectsDir = getProjectsDir();
-  if (!fs.existsSync(projectsDir)) {
-    return { totalInvocations: 0, totalCost: 0, skillCount: 0, agentCount: 0, entries: [] };
+export function getSkillAgentStats(opts?: SkillAgentStatsOptions): SkillAgentStats {
+  const { timeRange = 'all', filter } = opts || {};
+
+  let cutoffMs = 0;
+  if (timeRange !== 'all') {
+    const days = timeRange === '7d' ? 7 : timeRange === '30d' ? 30 : 90;
+    cutoffMs = Date.now() - days * 24 * 60 * 60 * 1000;
   }
 
-  const map = new Map<string, { type: 'skill' | 'agent'; invocations: number; totalCost: number; totalTokens: number; lastUsed: string }>();
+  const projectsDir = getProjectsDir();
+  if (!fs.existsSync(projectsDir)) {
+    return { totalInvocations: 0, totalCost: 0, totalAgentTokens: 0, totalSkillTokens: 0, skillCount: 0, agentCount: 0, entries: [] };
+  }
 
-  function upsert(name: string, type: 'skill' | 'agent', cost: number, tokens: number, ts: string) {
-    const existing = map.get(name);
-    if (existing) {
-      existing.invocations++;
-      existing.totalCost += cost;
-      existing.totalTokens += tokens;
-      if (ts > existing.lastUsed) { existing.lastUsed = ts; }
-    } else {
-      map.set(name, { type, invocations: 1, totalCost: cost, totalTokens: tokens, lastUsed: ts });
+  // ── Accumulators ────────────────────────────────────────────────────────────
+  type SubAgentAccum  = { spawns: number; totalTokens: number; totalCost: number };
+  type SessionAccum   = { invocations: number; tokens: number; cost: number; duration: number; timestamp: string; projectName: string };
+  type EntryAccum = {
+    type:          'skill' | 'agent';
+    invocations:   number;
+    totalCost:     number;
+    totalTokens:   number;
+    lastUsed:      string;
+    totalDuration: number;
+    sessionIds:    Set<string>;
+    subAgentMap:   Map<string, SubAgentAccum>;
+    sessions:      Map<string, SessionAccum>;
+  };
+
+  const map = new Map<string, EntryAccum>();
+
+  function getOrCreate(name: string, type: 'skill' | 'agent'): EntryAccum {
+    let e = map.get(name);
+    if (!e) {
+      e = { type, invocations: 0, totalCost: 0, totalTokens: 0, lastUsed: '',
+            totalDuration: 0, sessionIds: new Set(), subAgentMap: new Map(), sessions: new Map() };
+      map.set(name, e);
+    }
+    return e;
+  }
+
+  function upsertEntry(
+    name: string, type: 'skill' | 'agent',
+    cost: number, tokens: number, ts: string,
+    sessionId: string, projectName: string, duration: number,
+  ) {
+    const e = getOrCreate(name, type);
+    e.invocations++;
+    e.totalCost     += cost;
+    e.totalTokens   += tokens;
+    e.totalDuration += duration;
+    e.sessionIds.add(sessionId);
+    if (ts > e.lastUsed) { e.lastUsed = ts; }
+    // Per-session breakdown — only stored for the filtered entry to limit memory
+    if (!filter || name === filter) {
+      const sa = e.sessions.get(sessionId) ?? { invocations: 0, tokens: 0, cost: 0, duration: 0, timestamp: ts, projectName };
+      sa.invocations++;
+      sa.tokens   += tokens;
+      sa.cost     += cost;
+      sa.duration += duration;
+      e.sessions.set(sessionId, sa);
     }
   }
 
+  // ── Scan ─────────────────────────────────────────────────────────────────────
   for (const projectEntry of fs.readdirSync(projectsDir)) {
     const projectPath = path.join(projectsDir, projectEntry);
     try {
       if (!fs.statSync(projectPath).isDirectory()) { continue; }
     } catch { continue; }
 
-    const jsonlFiles = fs.readdirSync(projectPath).filter(f => f.endsWith('.jsonl'));
+    const projectName = projectIdToName(projectEntry);
+    const jsonlFiles  = fs.readdirSync(projectPath).filter(f => f.endsWith('.jsonl'));
 
     for (const file of jsonlFiles) {
       const sessionId = file.replace(/\.jsonl$/, '');
-      const filePath = path.join(projectPath, file);
+      const filePath  = path.join(projectPath, file);
+
+      if (cutoffMs > 0) {
+        try { if (fs.statSync(filePath).mtimeMs < cutoffMs) { continue; } } catch { continue; }
+      }
 
       let lines: string[];
       try {
         lines = fs.readFileSync(filePath, 'utf-8').split('\n').filter(Boolean);
       } catch { continue; }
 
-      // Pass 1: build tooluId → agentId from agent_progress entries
+      // Pass 1: tooluId → agentId
       const tooluToAgent = new Map<string, string>();
       for (const line of lines) {
         try {
           const msg = JSON.parse(line) as AgentProgressMsg;
-          if (
-            msg.type === 'progress' &&
-            msg.data?.type === 'agent_progress' &&
-            msg.data.agentId &&
-            msg.parentToolUseID
-          ) {
+          if (msg.type === 'progress' && msg.data?.type === 'agent_progress'
+              && msg.data.agentId && msg.parentToolUseID) {
             tooluToAgent.set(msg.parentToolUseID, msg.data.agentId);
           }
         } catch { /* skip */ }
       }
 
-      // Pass 2: single ordered pass — skill attribution windows + agent detection
-      // A "skill window" opens on a skill command and collects parent-session
-      // assistant tokens/cost until the next non-meta user turn closes it.
-      let openSkill: string | null = null;
-      let openSkillTs = '';
-      let openSkillTokens = 0;
-      let openSkillCost = 0;
+      // Pass 2: skill windows + agent detection
+      let openSkill:       string | null = null;
+      let openSkillTs      = '';
+      let openSkillLastTs  = '';
+      let openSkillTokens  = 0;
+      let openSkillCost    = 0;
 
       function flushSkill() {
-        if (openSkill) {
-          upsert(openSkill, 'skill', openSkillCost, openSkillTokens, openSkillTs);
-          openSkill = null;
-          openSkillTokens = 0;
-          openSkillCost = 0;
-        }
+        if (!openSkill) { return; }
+        const duration = (openSkillTs && openSkillLastTs)
+          ? Math.max(0, new Date(openSkillLastTs).getTime() - new Date(openSkillTs).getTime())
+          : 0;
+        upsertEntry(openSkill, 'skill', openSkillCost, openSkillTokens, openSkillTs, sessionId, projectName, duration);
+        openSkill = null; openSkillTs = ''; openSkillLastTs = ''; openSkillTokens = 0; openSkillCost = 0;
       }
 
       for (const line of lines) {
         try {
           const msg = JSON.parse(line) as SessionMessage & { isMeta?: boolean };
 
-          // ── User messages ───────────────────────────────────
           if (msg.type === 'user') {
             if (!msg.isMeta && typeof msg.message?.content === 'string') {
               const m = SKILL_RX.exec(msg.message.content);
               if (m) {
-                // New skill invocation — flush previous window, open new one
                 flushSkill();
-                openSkill = m[1].trim();
+                openSkill  = m[1].trim();
                 openSkillTs = msg.timestamp || '';
                 continue;
               }
             }
-            // Non-meta, non-command user turn → close the skill window
             if (!msg.isMeta) { flushSkill(); }
           }
 
-          // ── Assistant messages ──────────────────────────────
           if (msg.type === 'assistant' && msg.message?.usage) {
             const u = msg.message.usage;
             const tokens = (u.input_tokens || 0) + (u.output_tokens || 0) +
               (u.cache_read_input_tokens || 0) + (u.cache_creation_input_tokens || 0);
-            const cost = calculateCost(
-              msg.message.model || '',
-              u.input_tokens || 0,
-              u.output_tokens || 0,
-              u.cache_creation_input_tokens || 0,
-              u.cache_read_input_tokens || 0
-            );
+            const cost = calculateCost(msg.message.model || '', u.input_tokens || 0,
+              u.output_tokens || 0, u.cache_creation_input_tokens || 0, u.cache_read_input_tokens || 0);
             if (openSkill) {
               openSkillTokens += tokens;
-              openSkillCost += cost;
+              openSkillCost   += cost;
+              if (msg.timestamp) { openSkillLastTs = msg.timestamp; }
             }
           }
 
-          // ── Subagent spawns (agent entries, independent of skill windows) ──
           if (msg.type === 'assistant' && Array.isArray(msg.message?.content)) {
             for (const c of msg.message!.content as Record<string, unknown>[]) {
-              if (
-                c.type === 'tool_use' &&
-                (c.name as string) === 'Task' &&
-                c.input && typeof c.input === 'object'
-              ) {
-                const input = c.input as { subagent_type?: string };
-                const agentType = input.subagent_type || 'unknown';
-                const agentId = tooluToAgent.get(c.id as string);
+              if (c.type !== 'tool_use' || (c.name as string) !== 'Task' || !c.input) { continue; }
 
-                let agentCost = 0;
-                let agentTokens = 0;
-                if (agentId) {
-                  const agentPath = path.join(
-                    projectPath, sessionId, 'subagents', `agent-${agentId}.jsonl`
-                  );
-                  if (fs.existsSync(agentPath)) {
-                    try {
-                      const agentLines = fs.readFileSync(agentPath, 'utf-8').split('\n').filter(Boolean);
-                      for (const al of agentLines) {
-                        try {
-                          const am = JSON.parse(al) as SessionMessage;
-                          if (am.type === 'assistant' && am.message?.usage) {
-                            const u = am.message.usage;
-                            agentCost += calculateCost(
-                              am.message.model || '',
-                              u.input_tokens || 0,
-                              u.output_tokens || 0,
-                              u.cache_creation_input_tokens || 0,
-                              u.cache_read_input_tokens || 0
-                            );
-                            agentTokens += (u.input_tokens || 0) + (u.output_tokens || 0) +
-                              (u.cache_read_input_tokens || 0) + (u.cache_creation_input_tokens || 0);
-                          }
-                        } catch { /* skip */ }
-                      }
-                    } catch { /* skip */ }
-                  }
+              const input     = c.input as { subagent_type?: string };
+              const agentType = input.subagent_type || 'unknown';
+              const agentId   = tooluToAgent.get(c.id as string);
+
+              let agentCost = 0, agentTokens = 0, agentDur = 0;
+              let firstAgentTs = '', lastAgentTs = '';
+
+              if (agentId) {
+                const agentPath = path.join(projectPath, sessionId, 'subagents', `agent-${agentId}.jsonl`);
+                if (fs.existsSync(agentPath)) {
+                  try {
+                    for (const al of fs.readFileSync(agentPath, 'utf-8').split('\n').filter(Boolean)) {
+                      try {
+                        const am = JSON.parse(al) as SessionMessage;
+                        if (am.timestamp) {
+                          if (!firstAgentTs) { firstAgentTs = am.timestamp; }
+                          lastAgentTs = am.timestamp;
+                        }
+                        if (am.type === 'assistant' && am.message?.usage) {
+                          const u = am.message.usage;
+                          agentCost += calculateCost(am.message.model || '', u.input_tokens || 0,
+                            u.output_tokens || 0, u.cache_creation_input_tokens || 0, u.cache_read_input_tokens || 0);
+                          agentTokens += (u.input_tokens || 0) + (u.output_tokens || 0) +
+                            (u.cache_read_input_tokens || 0) + (u.cache_creation_input_tokens || 0);
+                        }
+                      } catch { /* skip */ }
+                    }
+                    agentDur = (firstAgentTs && lastAgentTs)
+                      ? Math.max(0, new Date(lastAgentTs).getTime() - new Date(firstAgentTs).getTime())
+                      : 0;
+                  } catch { /* skip */ }
                 }
-                upsert(agentType, 'agent', agentCost, agentTokens, msg.timestamp || '');
+              }
+
+              upsertEntry(agentType, 'agent', agentCost, agentTokens, msg.timestamp || '', sessionId, projectName, agentDur);
+
+              // Track sub-agent spawns under the open skill window
+              if (openSkill) {
+                const skillAccum = getOrCreate(openSkill, 'skill');
+                const existing = skillAccum.subAgentMap.get(agentType) ?? { spawns: 0, totalTokens: 0, totalCost: 0 };
+                existing.spawns++;
+                existing.totalTokens += agentTokens;
+                existing.totalCost   += agentCost;
+                skillAccum.subAgentMap.set(agentType, existing);
               }
             }
           }
         } catch { /* skip */ }
       }
-      flushSkill(); // flush if skill was last thing in session
+      flushSkill();
     }
   }
 
+  // ── Build entries ─────────────────────────────────────────────────────────
   const entries: SkillAgentEntry[] = Array.from(map.entries())
-    .map(([name, s]) => ({
-      name,
-      type: s.type,
-      invocations: s.invocations,
-      totalCost: s.totalCost,
-      avgCost: s.invocations > 0 ? s.totalCost / s.invocations : 0,
-      totalTokens: s.totalTokens,
-      lastUsed: s.lastUsed,
-    }))
+    .map(([name, a]) => {
+      const subAgentBreakdown: SubAgentMetric[] = Array.from(a.subAgentMap.entries())
+        .map(([t, sa]) => ({ type: t, spawns: sa.spawns, totalTokens: sa.totalTokens, totalCost: sa.totalCost,
+                             avgTokens: sa.spawns > 0 ? Math.round(sa.totalTokens / sa.spawns) : 0 }))
+        .sort((x, y) => y.totalCost - x.totalCost);
+
+      const sessionBreakdown: SessionMetric[] = Array.from(a.sessions.entries())
+        .map(([sid, s]) => ({ sessionId: sid, projectName: s.projectName, timestamp: s.timestamp,
+                              invocations: s.invocations, tokens: s.tokens, cost: s.cost, duration: s.duration }))
+        .sort((x, y) => y.timestamp.localeCompare(x.timestamp));
+
+      return {
+        name,
+        type:             a.type,
+        invocations:      a.invocations,
+        totalCost:        a.totalCost,
+        avgCost:          a.invocations > 0 ? a.totalCost / a.invocations : 0,
+        totalTokens:      a.totalTokens,
+        avgTokens:        a.invocations > 0 ? Math.round(a.totalTokens / a.invocations) : 0,
+        lastUsed:         a.lastUsed,
+        sessionCount:     a.sessionIds.size,
+        totalDuration:    a.totalDuration,
+        avgDuration:      a.invocations > 0 ? Math.round(a.totalDuration / a.invocations) : 0,
+        subAgentSpawns:   Array.from(a.subAgentMap.values()).reduce((s, sa) => s + sa.spawns, 0),
+        subAgentBreakdown,
+        sessionBreakdown,
+      };
+    })
     .sort((a, b) => b.totalCost - a.totalCost || b.invocations - a.invocations);
 
   const skillCount = new Set(entries.filter(e => e.type === 'skill').map(e => e.name)).size;
@@ -966,11 +1047,303 @@ export function getSkillAgentStats(): SkillAgentStats {
 
   return {
     totalInvocations: entries.reduce((s, e) => s + e.invocations, 0),
-    totalCost: entries.reduce((s, e) => s + e.totalCost, 0),
+    totalCost:        entries.reduce((s, e) => s + e.totalCost, 0),
     totalAgentTokens: entries.filter(e => e.type === 'agent').reduce((s, e) => s + e.totalTokens, 0),
     totalSkillTokens: entries.filter(e => e.type === 'skill').reduce((s, e) => s + e.totalTokens, 0),
     skillCount,
     agentCount,
     entries,
+  };
+}
+
+// ── Agent tree ────────────────────────────────────────────────────────────────
+
+function buildAgentTree(
+  filePath: string,
+  projectPath: string,
+  sessionId: string,
+  sessionInfo: SessionInfo,
+): AgentTreeNode {
+  let lines: string[];
+  try {
+    lines = fs.readFileSync(filePath, 'utf-8').split('\n').filter(Boolean);
+  } catch {
+    lines = [];
+  }
+
+  // Build tooluId → agentId from progress messages
+  const tooluToAgent = new Map<string, string>();
+  for (const line of lines) {
+    try {
+      const msg = JSON.parse(line) as AgentProgressMsg;
+      if (
+        msg.type === 'progress' &&
+        msg.data?.type === 'agent_progress' &&
+        msg.data.agentId &&
+        msg.parentToolUseID
+      ) {
+        tooluToAgent.set(msg.parentToolUseID, msg.data.agentId);
+      }
+    } catch { /* skip */ }
+  }
+
+  const parentTokens =
+    sessionInfo.totalInputTokens +
+    sessionInfo.totalOutputTokens +
+    sessionInfo.totalCacheReadTokens +
+    sessionInfo.totalCacheWriteTokens;
+
+  // ── Helper: load agent node from its JSONL ──────────────────────────────
+  function loadAgentNode(agentId: string, agentType: string, idx: number): AgentTreeNode {
+    const agentPath = path.join(projectPath, sessionId, 'subagents', `agent-${agentId}.jsonl`);
+    let agentTokens = 0, agentCost = 0, agentModel = '';
+    if (fs.existsSync(agentPath)) {
+      try {
+        for (const al of fs.readFileSync(agentPath, 'utf-8').split('\n').filter(Boolean)) {
+          try {
+            const am = JSON.parse(al) as SessionMessage;
+            if (am.type === 'assistant' && am.message?.usage) {
+              const u = am.message.usage;
+              agentTokens += (u.input_tokens || 0) + (u.output_tokens || 0) +
+                (u.cache_read_input_tokens || 0) + (u.cache_creation_input_tokens || 0);
+              agentCost += calculateCost(am.message.model || '', u.input_tokens || 0,
+                u.output_tokens || 0, u.cache_creation_input_tokens || 0, u.cache_read_input_tokens || 0);
+              if (!agentModel && am.message.model) { agentModel = am.message.model; }
+            }
+          } catch { /* skip */ }
+        }
+      } catch { /* skip */ }
+    }
+    return { id: agentId || `unknown-${idx}`, label: agentType, type: 'agent', tokens: agentTokens, cost: agentCost, model: agentModel || undefined, children: [] };
+  }
+
+  // ── Skill-window scan: detect skills and attribute agents to them ────────
+  type SkillAccum = { name: string; tokens: number; cost: number; invocations: number; agentNodes: AgentTreeNode[] };
+
+  const skillMap = new Map<string, SkillAccum>();   // skill name → accum (merged across re-invocations for tree)
+  const skillOrder: string[] = [];                  // ordered first-seen skill names
+  let openSkill: SkillAccum | null = null;
+  const claimedAgentIds = new Set<string>();
+  const directAgentNodes: AgentTreeNode[] = [];
+
+  let agentIdx = 0;
+  for (const line of lines) {
+    try {
+      const msg = JSON.parse(line) as SessionMessage & { isMeta?: boolean };
+
+      if (msg.type === 'user') {
+        if (!msg.isMeta && typeof msg.message?.content === 'string') {
+          const m = SKILL_RX.exec(msg.message.content);
+          if (m) {
+            const name = m[1].trim();
+            if (!skillMap.has(name)) {
+              skillMap.set(name, { name, tokens: 0, cost: 0, invocations: 0, agentNodes: [] });
+              skillOrder.push(name);
+            }
+            openSkill = skillMap.get(name)!;
+            openSkill.invocations++;
+            continue;
+          }
+        }
+        if (!msg.isMeta) { openSkill = null; }
+      }
+
+      if (msg.type === 'assistant') {
+        // Accumulate tokens into open skill
+        if (openSkill && msg.message?.usage) {
+          const u = msg.message.usage;
+          openSkill.tokens += (u.input_tokens || 0) + (u.output_tokens || 0) +
+            (u.cache_read_input_tokens || 0) + (u.cache_creation_input_tokens || 0);
+          openSkill.cost += calculateCost(msg.message.model || '', u.input_tokens || 0,
+            u.output_tokens || 0, u.cache_creation_input_tokens || 0, u.cache_read_input_tokens || 0);
+        }
+
+        // Detect Task tool_use
+        if (Array.isArray(msg.message?.content)) {
+          for (const c of msg.message!.content as Record<string, unknown>[]) {
+            if (c.type !== 'tool_use' || (c.name as string) !== 'Task') { continue; }
+            const input     = c.input as { subagent_type?: string } | undefined;
+            const agentType = input?.subagent_type || 'unknown';
+            const agentId   = tooluToAgent.get(c.id as string) ?? `unknown-${agentIdx}`;
+            const node      = loadAgentNode(agentId, agentType, agentIdx++);
+
+            if (openSkill) {
+              openSkill.agentNodes.push(node);
+              claimedAgentIds.add(agentId);
+            } else {
+              directAgentNodes.push(node);
+            }
+          }
+        }
+      }
+    } catch { /* skip */ }
+  }
+
+  // ── Build children: skill nodes (with their agents) + unclaimed agents ──
+  const children: AgentTreeNode[] = [];
+
+  for (const name of skillOrder) {
+    const s = skillMap.get(name)!;
+    children.push({
+      id:          `skill-${name}`,
+      label:       name,
+      type:        'skill',
+      tokens:      s.tokens,
+      cost:        s.cost,
+      invocations: s.invocations,
+      children:    s.agentNodes,
+    });
+  }
+
+  for (const node of directAgentNodes) {
+    if (!claimedAgentIds.has(node.id)) { children.push(node); }
+  }
+
+  return {
+    id: 'root',
+    label: 'Parent Session',
+    type: 'root',
+    tokens: parentTokens,
+    cost: sessionInfo.estimatedCost,
+    model: sessionInfo.model,
+    children,
+  };
+}
+
+export async function getSessionDetailV2(sessionId: string): Promise<SessionDetailV2 | null> {
+  if (!fs.existsSync(getProjectsDir())) { return null; }
+  const projectEntries = fs.readdirSync(getProjectsDir());
+
+  for (const entry of projectEntries) {
+    const projectPath = path.join(getProjectsDir(), entry);
+    if (!fs.statSync(projectPath).isDirectory()) { continue; }
+
+    const filePath = path.join(projectPath, `${sessionId}.jsonl`);
+    if (!fs.existsSync(filePath)) { continue; }
+
+    const sessionInfo = parseSessionFile(filePath, entry, projectIdToName(entry));
+    const { skillsInSession, agentsInSession } = parseSessionSkillAgents(filePath, entry, sessionInfo.id);
+    const agentTree = buildAgentTree(filePath, projectPath, sessionId, sessionInfo);
+    const messages: SessionMessageDisplay[] = [];
+
+    // ── Tool metrics accumulators ─────────────────────────────────────────
+    // Maps tool_use_id → { name, timestamp, inputEstTokens }
+    const pendingTools = new Map<string, { name: string; ts: string; inputEst: number }>();
+    // Per-tool accumulator: name → { count, totalMs, tokens }
+    const toolAccum = new Map<string, { count: number; totalMs: number; tokens: number }>();
+
+    const fileStream = fs.createReadStream(filePath);
+    const rl = readline.createInterface({ input: fileStream, crlfDelay: Infinity });
+
+    for await (const line of rl) {
+      if (!line.trim()) { continue; }
+      try {
+        const msg = JSON.parse(line) as SessionMessage;
+
+        if (msg.type === 'user' && msg.message?.role === 'user') {
+          const content = msg.message.content;
+          let text = '';
+          if (typeof content === 'string') {
+            text = content;
+          } else if (Array.isArray(content)) {
+            for (const c of content as Record<string, unknown>[]) {
+              if (c.type === 'text') {
+                text += (c.text as string ?? '');
+              } else if (c.type === 'tool_result') {
+                // Compute duration and output token estimate
+                const toolUseId = c.tool_use_id as string | undefined;
+                const pending   = toolUseId ? pendingTools.get(toolUseId) : undefined;
+                const resultContent = typeof c.content === 'string'
+                  ? c.content
+                  : JSON.stringify(c.content ?? '');
+                const outputEst = Math.round(resultContent.length / 4);
+
+                if (pending && msg.timestamp && pending.ts) {
+                  const durationMs = Math.max(0, new Date(msg.timestamp).getTime() - new Date(pending.ts).getTime());
+                  const existing = toolAccum.get(pending.name) ?? { count: 0, totalMs: 0, tokens: 0 };
+                  existing.count   += 1;
+                  existing.totalMs += durationMs;
+                  existing.tokens  += pending.inputEst + outputEst;
+                  toolAccum.set(pending.name, existing);
+                  pendingTools.delete(toolUseId!);
+                }
+              }
+            }
+          }
+          if (text.trim()) {
+            messages.push({ role: 'user', content: text.trim(), timestamp: msg.timestamp });
+          }
+        }
+
+        if (msg.type === 'assistant' && msg.message?.content) {
+          const content = msg.message.content;
+          const toolCalls: { name: string; id: string }[] = [];
+          let text = '';
+          if (Array.isArray(content)) {
+            for (const c of content) {
+              if (c && typeof c === 'object') {
+                const cc = c as Record<string, unknown>;
+                if (cc.type === 'text') {
+                  text += (cc.text as string) + '\n';
+                } else if (cc.type === 'tool_use') {
+                  const toolId  = (cc.id as string) || '';
+                  const toolName = cc.name as string;
+                  const inputEst = Math.round(JSON.stringify(cc.input ?? {}).length / 4);
+                  toolCalls.push({ name: toolName, id: toolId });
+                  if (toolId && msg.timestamp) {
+                    pendingTools.set(toolId, { name: toolName, ts: msg.timestamp, inputEst });
+                  }
+                }
+              }
+            }
+          }
+          if (text.trim() || toolCalls.length > 0) {
+            messages.push({
+              role: 'assistant',
+              content: text.trim() || `[Used ${toolCalls.length} tool(s): ${toolCalls.map(t => t.name).join(', ')}]`,
+              timestamp: msg.timestamp,
+              model: msg.message.model,
+              usage: msg.message.usage as TokenUsage | undefined,
+              toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
+            });
+          }
+        }
+      } catch { /* skip malformed lines */ }
+    }
+
+    // ── Build toolMetrics ─────────────────────────────────────────────────
+    const byTool: ToolMetricEntry[] = Array.from(toolAccum.entries())
+      .map(([name, a]) => ({
+        name,
+        count:           a.count,
+        totalDurationMs: a.totalMs,
+        avgDurationMs:   a.count > 0 ? Math.round(a.totalMs / a.count) : 0,
+        estimatedTokens: a.tokens,
+      }))
+      .sort((x, y) => y.totalDurationMs - x.totalDurationMs);
+
+    const toolMetrics: ToolMetrics = {
+      totalDurationMs:  byTool.reduce((s, e) => s + e.totalDurationMs, 0),
+      estimatedTokens:  byTool.reduce((s, e) => s + e.estimatedTokens, 0),
+      byTool,
+    };
+
+    return { ...sessionInfo, messages, skillsInSession, agentsInSession, agentTree, toolMetrics };
+  }
+
+  return null;
+}
+
+// ── Session list (lightweight, no messages) ───────────────────────────────────
+
+export function getSessionList(opts?: { query?: string; limit?: number; offset?: number }): {
+  sessions: SessionInfo[];
+  total: number;
+} {
+  const { query, limit = 50, offset = 0 } = opts || {};
+  const all = query ? searchSessions(query, 1000) : getSessions(1000, 0);
+  return {
+    sessions: all.slice(offset, offset + limit),
+    total: all.length,
   };
 }

@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import * as fs    from 'fs';
 import * as path  from 'path';
 import * as os    from 'os';
-import { getSkillAgentStats } from '../data/reader';
+import { getSkillAgentStats, loadCustomSkills } from '../data/reader';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -39,7 +39,11 @@ class SkillItem extends vscode.TreeItem {
     this.tooltip      = meta.description;
     this.iconPath     = new vscode.ThemeIcon(meta.installed ? 'check' : 'cloud-download');
     this.contextValue = meta.installed ? 'skill-installed' : 'skill-available';
-    this.command = undefined;
+    this.command = {
+      command:   'klawops.openSkillDetail',
+      title:     'View Skill Details',
+      arguments: [meta.name, meta.type],
+    };
   }
 }
 
@@ -111,14 +115,55 @@ export class SkillsTreeProvider implements vscode.TreeDataProvider<SkillItem> {
   getTreeItem(item: SkillItem): SkillItem { return item; }
 
   getChildren(): SkillItem[] {
-    const metas = loadSkillMetas(this.context);
+    const metas    = loadSkillMetas(this.context);
     const statsMap = new Map<string, { invocations: number; totalCost: number; totalTokens: number }>();
+    let allStats: ReturnType<typeof getSkillAgentStats> | null = null;
+
     try {
-      for (const e of getSkillAgentStats().entries) {
-        if (e.type === 'skill') { statsMap.set(e.name, { invocations: e.invocations, totalCost: e.totalCost, totalTokens: e.totalTokens }); }
+      allStats = getSkillAgentStats();
+      for (const e of allStats.entries) {
+        statsMap.set(e.name, { invocations: e.invocations, totalCost: e.totalCost, totalTokens: e.totalTokens });
       }
     } catch { /* ignore — show skills without stats on error */ }
-    return metas.map(m => new SkillItem(m, statsMap.get(m.name)));
+
+    // Don't show bundled KlawOps skills in the sidebar tree —
+    // only custom and session-detected skills/agents appear here.
+    const items: SkillItem[] = [];
+    const bundledSet = new Set(metas.map(m => m.name));
+
+    // Merge custom skills registered via klawops-custom-skills.json
+    try {
+      for (const cs of loadCustomSkills()) {
+        if (bundledSet.has(cs.name)) { continue; }
+        bundledSet.add(cs.name);
+        items.push(new SkillItem({
+          name:        cs.name,
+          description: cs.description || `Custom ${cs.type}`,
+          type:        cs.type,
+          filename:    '',
+          sourcePath:  '',
+          installed:   true,
+        }, statsMap.get(cs.name)));
+      }
+    } catch { /* ignore */ }
+
+    // Also show detected agents/skills from session data that aren't bundled or custom
+    if (allStats) {
+      for (const e of allStats.entries) {
+        if (bundledSet.has(e.name)) { continue; }
+        const detectedMeta: SkillMeta = {
+          name:        e.name,
+          description: `Detected ${e.type}`,
+          type:        e.type === 'agent' ? 'agent' : 'command',
+          filename:    '',
+          sourcePath:  '',
+          installed:   true,
+        };
+        items.push(new SkillItem(detectedMeta, statsMap.get(e.name)));
+      }
+    }
+
+    return items.sort((a, b) => a.meta.name.localeCompare(b.meta.name));
   }
 
   async install(item: vscode.TreeItem): Promise<void> {
