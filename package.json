@@ -125,6 +125,7 @@
     "watch": "node esbuild.js --watch",
     "serve": "node out/server.js",
     "package": "vsce package",
+    "package:server": "node esbuild.js && tar -czf server.tar.gz -C out server.js webview",
     "lint": "eslint src --ext ts,tsx",
     "update": "bash update.sh"
   },

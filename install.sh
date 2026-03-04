@@ -5,6 +5,8 @@ set -euo pipefail
 
 REPO="TassanSaidi/KlawOps"
 API_URL="https://api.github.com/repos/${REPO}/releases/latest"
+KLAWOPS_DIR="${HOME}/.klawops"
+BIN_DIR="${HOME}/.local/bin"
 
 # ── Colours ───────────────────────────────────────────────────────────────────
 if [ -t 1 ]; then
@@ -23,16 +25,28 @@ if ! command -v curl &>/dev/null; then
   exit 1
 fi
 
-if ! command -v code &>/dev/null; then
-  err "'code' CLI not found. VS Code must be installed with the shell command in your PATH."
-  err ""
-  err "  macOS: open VS Code → Cmd+Shift+P → 'Shell Command: Install code command in PATH'"
-  err "  Linux: ensure /usr/share/code or your VS Code bin directory is in PATH"
+if ! command -v tar &>/dev/null; then
+  err "tar is required but not found. Please install tar and try again."
   exit 1
 fi
 
-if ! command -v tar &>/dev/null; then
-  err "tar is required but not found. Please install tar and try again."
+HAS_CODE=true
+HAS_NODE=true
+
+if ! command -v code &>/dev/null; then
+  warn "'code' CLI not found — VS Code extension will be skipped."
+  warn "To enable: open VS Code → Cmd+Shift+P → 'Shell Command: Install code command in PATH'"
+  HAS_CODE=false
+fi
+
+if ! command -v node &>/dev/null; then
+  warn "'node' not found — terminal mode will be skipped."
+  warn "Install Node.js from https://nodejs.org to enable 'klawops' terminal command."
+  HAS_NODE=false
+fi
+
+if [ "$HAS_CODE" = false ] && [ "$HAS_NODE" = false ]; then
+  err "Neither 'code' nor 'node' found. Nothing to install."
   exit 1
 fi
 
@@ -60,12 +74,18 @@ SKILLS_URL=$(printf '%s' "$RELEASE_JSON" \
   | head -1 \
   | sed 's/.*"browser_download_url": *"\([^"]*\)".*/\1/')
 
+SERVER_URL=$(printf '%s' "$RELEASE_JSON" \
+  | grep '"browser_download_url"' \
+  | grep 'server\.tar\.gz"' \
+  | head -1 \
+  | sed 's/.*"browser_download_url": *"\([^"]*\)".*/\1/')
+
 VERSION=$(printf '%s' "$RELEASE_JSON" \
   | grep '"tag_name"' \
   | head -1 \
   | sed 's/.*"tag_name": *"\([^"]*\)".*/\1/')
 
-if [ -z "$VSIX_URL" ] || [ -z "$SKILLS_URL" ]; then
+if [ -z "$VSIX_URL" ] && [ -z "$SERVER_URL" ]; then
   err "No release artifacts found. Please check: https://github.com/${REPO}/releases"
   exit 1
 fi
@@ -76,25 +96,36 @@ log "Found KlawOps ${VERSION}"
 TMP_DIR=$(mktemp -d)
 trap 'rm -rf "$TMP_DIR"' EXIT
 
-log "Downloading extension..."
-curl -fsSL -o "${TMP_DIR}/klawops.vsix" "$VSIX_URL"
+if [ "$HAS_CODE" = true ] && [ -n "$VSIX_URL" ]; then
+  log "Downloading extension..."
+  curl -fsSL -o "${TMP_DIR}/klawops.vsix" "$VSIX_URL"
+fi
 
-log "Downloading skills..."
-curl -fsSL -o "${TMP_DIR}/skills.tar.gz" "$SKILLS_URL"
+if [ -n "$SKILLS_URL" ]; then
+  log "Downloading skills..."
+  curl -fsSL -o "${TMP_DIR}/skills.tar.gz" "$SKILLS_URL"
+fi
+
+if [ "$HAS_NODE" = true ] && [ -n "$SERVER_URL" ]; then
+  log "Downloading terminal server..."
+  curl -fsSL -o "${TMP_DIR}/server.tar.gz" "$SERVER_URL"
+fi
 
 # ── Install VS Code extension ─────────────────────────────────────────────────
-log "Installing VS Code extension..."
-code --install-extension "${TMP_DIR}/klawops.vsix" --force
+if [ "$HAS_CODE" = true ] && [ -f "${TMP_DIR}/klawops.vsix" ]; then
+  log "Installing VS Code extension..."
+  code --install-extension "${TMP_DIR}/klawops.vsix" --force
+fi
 
 # ── Install skills (merge — never overwrite existing files) ───────────────────
 mkdir -p "${HOME}/.claude/commands" "${HOME}/.claude/agents"
 
-SKILLS_TMP="${TMP_DIR}/skills"
-mkdir -p "$SKILLS_TMP"
-tar -xzf "${TMP_DIR}/skills.tar.gz" -C "$SKILLS_TMP"
-
 installed=0
 skipped=0
+
+if [ ! -f "${TMP_DIR}/skills.tar.gz" ]; then
+  log "No skills archive in this release — skipping."
+fi
 
 install_skill() {
   local src="$1"
@@ -109,29 +140,65 @@ install_skill() {
   fi
 }
 
-if [ -d "${SKILLS_TMP}/commands" ]; then
-  for f in "${SKILLS_TMP}/commands/"*.md; do
-    [ -f "$f" ] || continue
-    install_skill "$f" "${HOME}/.claude/commands/$(basename "$f")"
-  done
+if [ -f "${TMP_DIR}/skills.tar.gz" ]; then
+  SKILLS_TMP="${TMP_DIR}/skills"
+  mkdir -p "$SKILLS_TMP"
+  tar -xzf "${TMP_DIR}/skills.tar.gz" -C "$SKILLS_TMP"
+
+  if [ -d "${SKILLS_TMP}/commands" ]; then
+    for f in "${SKILLS_TMP}/commands/"*.md; do
+      [ -f "$f" ] || continue
+      install_skill "$f" "${HOME}/.claude/commands/$(basename "$f")"
+    done
+  fi
+
+  if [ -d "${SKILLS_TMP}/agents" ]; then
+    for f in "${SKILLS_TMP}/agents/"*.md; do
+      [ -f "$f" ] || continue
+      install_skill "$f" "${HOME}/.claude/agents/$(basename "$f")"
+    done
+  fi
 fi
 
-if [ -d "${SKILLS_TMP}/agents" ]; then
-  for f in "${SKILLS_TMP}/agents/"*.md; do
-    [ -f "$f" ] || continue
-    install_skill "$f" "${HOME}/.claude/agents/$(basename "$f")"
-  done
+# ── Install terminal server ───────────────────────────────────────────────────
+TERMINAL_INSTALLED=false
+if [ "$HAS_NODE" = true ] && [ -f "${TMP_DIR}/server.tar.gz" ]; then
+  log "Installing terminal server to ${KLAWOPS_DIR}..."
+  mkdir -p "${KLAWOPS_DIR}"
+  tar -xzf "${TMP_DIR}/server.tar.gz" -C "${KLAWOPS_DIR}"
+
+  # Create klawops wrapper script
+  mkdir -p "${BIN_DIR}"
+  cat > "${BIN_DIR}/klawops" <<'EOF'
+#!/usr/bin/env bash
+exec node "${HOME}/.klawops/server.js" "$@"
+EOF
+  chmod +x "${BIN_DIR}/klawops"
+  TERMINAL_INSTALLED=true
+
+  # Remind about PATH if needed
+  if ! echo "$PATH" | grep -q "${BIN_DIR}"; then
+    warn "${BIN_DIR} is not in your PATH."
+    warn "Add this to your shell profile (~/.zshrc or ~/.bashrc):"
+    warn "  export PATH=\"\${HOME}/.local/bin:\${PATH}\""
+  fi
 fi
 
 # ── Summary ───────────────────────────────────────────────────────────────────
 printf "\n"
 log "KlawOps ${VERSION} installed!"
-log "  Extension : tonderaisaidi.klawops"
+if [ "$HAS_CODE" = true ] && [ -f "${TMP_DIR}/klawops.vsix" ]; then
+  log "  VS Code   : tonderaisaidi.klawops (restart VS Code to activate)"
+fi
 log "  Skills    : ${installed} installed, ${skipped} skipped (already existed)"
+if [ "$TERMINAL_INSTALLED" = true ]; then
+  log "  Terminal  : klawops command installed to ${BIN_DIR}/klawops"
+fi
 printf "\n"
-log "Restart VS Code to activate KlawOps."
-log "Then use /research_codebase_generic, /create_plan_generic, etc. in Claude Code."
-printf "\n"
-log "Terminal mode (no VS Code required):"
-log "  npm run compile && npm run serve"
-log "  Or: node out/server.js --port 3131 --claude-dir ~/.claude"
+if [ "$HAS_CODE" = true ]; then
+  log "VS Code: use /research_codebase_generic, /create_plan_generic, etc. in Claude Code."
+fi
+if [ "$TERMINAL_INSTALLED" = true ]; then
+  log "Terminal: run 'klawops' to open the dashboard in your browser."
+  log "  Options: klawops --port 3131 --claude-dir ~/.claude --no-open"
+fi
