@@ -34,6 +34,8 @@ The conversation replay shows:
 - Tool call badges inline with assistant messages
 - Right sidebar: token breakdown, tools used, context compaction timeline, session metadata
 
+![Session detail with agent hierarchy](media/screenshots/session-detail.png)
+
 ---
 
 ### Analytics Dashboard
@@ -48,7 +50,23 @@ The dashboard shows:
 - **Peak Hours** — bar chart of your most productive hours
 - **Recent Sessions** — clickable table that opens conversation replay
 
+![Dashboard overview](media/screenshots/dashboard.png)
+
 The dashboard updates automatically when a new Claude session is written.
+
+#### Skills & Agents Analytics
+
+The **Skills & Agents** tab tracks every `/skill` and sub-agent invocation across your sessions — cost, token usage, call count, average duration, and last used.
+
+![Skills & Agents in VS Code](media/screenshots/skills-agents-vscode.png)
+
+![Cost by skill / agent chart](media/screenshots/skills-agents-chart.png)
+
+![All skills & agents table](media/screenshots/skills-agents-table.png)
+
+Click any row to filter the view to that skill or agent.
+
+![Filtered skill view](media/screenshots/skills-filtered.png)
 
 ---
 
@@ -71,25 +89,6 @@ KlawOps bundles four **AI workflow commands** and four **sub-agents** designed f
 - `web-search-researcher` — researches modern APIs and libraries on the web
 
 Each skill shows an install status icon (`✓` installed / `↓` not installed). Use the **Install** or **Install All Skills** button to copy skills to your chosen scope.
-
----
-
-## Screenshots
-
-### Dashboard
-![Dashboard overview](media/screenshots/dashboard.png)
-
-### Skills & Agents
-![Skills & Agents in VS Code](media/screenshots/skills-agents-vscode.png)
-
-![Cost by skill / agent chart](media/screenshots/skills-agents-chart.png)
-
-![Skills & Agents table](media/screenshots/skills-agents-table.png)
-
-![Filtered skill view](media/screenshots/skills-filtered.png)
-
-### Session Detail
-![Session detail with agent hierarchy](media/screenshots/session-detail.png)
 
 ---
 
