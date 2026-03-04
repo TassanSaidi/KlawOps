@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { getDashboardStats, getSessionList, getSessionDetailV2, getSkillAgentStats } from '../data/reader';
+import { getDashboardStats, getSessionList, getSessionDetailV2, getSkillAgentStats, getSessions } from '../data/reader';
 import type { SkillAgentStatsOptions } from '../data/types';
 import { getWebviewHtml } from '../utils/webview';
 
@@ -110,5 +110,9 @@ export function pushUpdate(): void {
   try {
     const skills = getSkillAgentStats({});
     unifiedPanel.webview.postMessage({ type: 'SKILLS_STATS_DATA', payload: skills });
+  } catch { /* ignore */ }
+  try {
+    const result = getSessionList({ limit: 50, offset: 0 });
+    unifiedPanel.webview.postMessage({ type: 'SESSION_LIST_DATA', payload: result });
   } catch { /* ignore */ }
 }

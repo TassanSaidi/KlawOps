@@ -397,7 +397,7 @@ function parseSessionSkillAgents(
 
       if (msg.type === 'assistant' && Array.isArray(msg.message?.content)) {
         for (const c of msg.message!.content as Record<string, unknown>[]) {
-          if (c.type === 'tool_use' && (c.name as string) === 'Task' && c.input && typeof c.input === 'object') {
+          if (c.type === 'tool_use' && AGENT_TOOL_NAMES.has(c.name as string) && c.input && typeof c.input === 'object') {
             const agentType = ((c.input as { subagent_type?: string }).subagent_type) || 'unknown';
             const agentId = tooluToAgent.get(c.id as string);
             let agentCost = 0; let agentTokens = 0;
@@ -448,7 +448,7 @@ export async function getSessionDetail(sessionId: string): Promise<SessionDetail
     if (!fs.existsSync(filePath)) { continue; }
 
     const sessionInfo = parseSessionFile(filePath, entry, projectIdToName(entry));
-    const { skillsInSession, agentsInSession } = parseSessionSkillAgents(filePath, entry, sessionInfo.id);
+    const { skillsInSession, agentsInSession } = parseSessionSkillAgents(filePath, projectPath, sessionInfo.id);
     const messages: SessionMessageDisplay[] = [];
 
     const fileStream = fs.createReadStream(filePath);
@@ -804,6 +804,9 @@ export function getDashboardStats(): DashboardStats {
 
 const SKILL_RX = /<command-name>\/([^<]+)<\/command-name>/;
 
+/** Tool names used by Claude Code for sub-agent invocations. Older sessions use 'Task', newer use 'Agent'. */
+const AGENT_TOOL_NAMES = new Set(['Task', 'Agent']);
+
 /** Extract plain text from a message content that may be a string or an array of content blocks. */
 function getMessageText(content: unknown): string {
   if (typeof content === 'string') { return content; }
@@ -973,7 +976,7 @@ export function getSkillAgentStats(opts?: SkillAgentStatsOptions): SkillAgentSta
 
           if (msg.type === 'assistant' && Array.isArray(msg.message?.content)) {
             for (const c of msg.message!.content as Record<string, unknown>[]) {
-              if (c.type !== 'tool_use' || (c.name as string) !== 'Task' || !c.input) { continue; }
+              if (c.type !== 'tool_use' || !AGENT_TOOL_NAMES.has(c.name as string) || !c.input) { continue; }
 
               const input     = c.input as { subagent_type?: string };
               const agentType = input.subagent_type || 'unknown';
@@ -1180,7 +1183,7 @@ function buildAgentTree(
         // Detect Task tool_use
         if (Array.isArray(msg.message?.content)) {
           for (const c of msg.message!.content as Record<string, unknown>[]) {
-            if (c.type !== 'tool_use' || (c.name as string) !== 'Task') { continue; }
+            if (c.type !== 'tool_use' || !AGENT_TOOL_NAMES.has(c.name as string)) { continue; }
             const input     = c.input as { subagent_type?: string } | undefined;
             const agentType = input?.subagent_type || 'unknown';
             const agentId   = tooluToAgent.get(c.id as string) ?? `unknown-${agentIdx}`;
@@ -1241,7 +1244,7 @@ export async function getSessionDetailV2(sessionId: string): Promise<SessionDeta
     if (!fs.existsSync(filePath)) { continue; }
 
     const sessionInfo = parseSessionFile(filePath, entry, projectIdToName(entry));
-    const { skillsInSession, agentsInSession } = parseSessionSkillAgents(filePath, entry, sessionInfo.id);
+    const { skillsInSession, agentsInSession } = parseSessionSkillAgents(filePath, projectPath, sessionInfo.id);
     const agentTree = buildAgentTree(filePath, projectPath, sessionId, sessionInfo);
     const messages: SessionMessageDisplay[] = [];
 
