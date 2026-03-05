@@ -5,6 +5,7 @@ import {
   getSessionList,
   getSessionDetailV2,
   getSkillAgentStats,
+  generateSessionsCsv,
 } from '../data/reader';
 import type { SkillAgentStatsOptions } from '../data/types';
 
@@ -57,6 +58,18 @@ export function createApiRouter(): Router {
       const filter = req.query.filter as string | undefined;
       if (filter) { opts.filter = filter; }
       res.json(getSkillAgentStats(opts));
+    } catch (err) {
+      res.status(500).json({ error: String(err) });
+    }
+  });
+
+  // GET /api/export/csv
+  router.get('/export/csv', (_req: Request, res: Response) => {
+    try {
+      const csv = generateSessionsCsv();
+      res.setHeader('Content-Type', 'text/csv');
+      res.setHeader('Content-Disposition', 'attachment; filename="klawops-sessions.csv"');
+      res.send(csv);
     } catch (err) {
       res.status(500).json({ error: String(err) });
     }

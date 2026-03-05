@@ -1385,3 +1385,37 @@ export function getSessionList(opts?: { query?: string; limit?: number; offset?:
     total: all.length,
   };
 }
+
+// ── CSV export for cost tracking ──────────────────────────────────────────────
+
+function csvEscape(value: string): string {
+  if (value.includes(',') || value.includes('"') || value.includes('\n')) {
+    return `"${value.replace(/"/g, '""')}"`;
+  }
+  return value;
+}
+
+export function generateSessionsCsv(): string {
+  const sessions = getSessions(10000, 0);
+  const headers = [
+    'Session ID', 'Project', 'Timestamp', 'Duration (min)', 'Messages',
+    'Input Tokens', 'Output Tokens', 'Cache Read Tokens', 'Cache Write Tokens',
+    'Estimated Cost (USD)', 'Model', 'Git Branch', 'First Message',
+  ];
+  const rows = sessions.map(s => [
+    s.id,
+    csvEscape(s.projectName),
+    s.timestamp,
+    (s.duration / 60000).toFixed(1),
+    s.messageCount.toString(),
+    s.totalInputTokens.toString(),
+    s.totalOutputTokens.toString(),
+    s.totalCacheReadTokens.toString(),
+    s.totalCacheWriteTokens.toString(),
+    s.estimatedCost.toFixed(4),
+    s.model,
+    csvEscape(s.gitBranch || ''),
+    csvEscape(s.firstMessage || ''),
+  ]);
+  return [headers.join(','), ...rows.map(r => r.join(','))].join('\n');
+}

@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.1.2] — 2026-03-05
+
+### Fixed
+
+- **`@types/express` moved from `dependencies` to `devDependencies`** — Type packages should not ship in the production bundle.
+- **`package.json` repository URL corrected** — Changed `tonderaisaidi/klawops` to `TassanSaidi/KlawOps` to match the actual GitHub repo.
+
+### Added
+
+- **CSV export for cost tracking** — "Export CSV" button on the Dashboard exports all sessions with timestamps, token counts, costs, models, branches, and first messages. Also available as `/api/export/csv` in standalone server mode.
+
+### Notes
+
+- **Token estimate sanity check** — The `estimatedTokens` on tool metrics uses a `chars / 4` heuristic for tool I/O, which is reasonable for English text/JSON. These are only used for relative tool usage display, not for cost calculation (which uses accurate API-reported token counts).
+
+### Known issues (nice-to-haves for future)
+
+- No React error boundary — a rendering crash white-screens the entire panel
+
 ## [0.1.1] — 2026-03-04
 
 ### Fixed
@@ -15,17 +34,6 @@
 ### Added
 
 - **Load More pagination in Sessions tab** — Previously only the first 50 sessions loaded with no way to see more. Now shows a "Load more (N remaining)" button.
-
-### Known issues (nice-to-haves for future)
-
-- `findClosestPricing` silently falls back to Sonnet pricing for completely unknown model IDs — should warn or return 0
-- `formatCost`, `formatTokens`, `formatDuration`, `timeAgo`, etc. are copy-pasted across every webview tab — should be a shared module
-- `getProjects()` and `getSessions()` read every JSONL file synchronously — will block the extension host for large session directories
-- No React error boundary — a rendering crash white-screens the entire panel
-- Session search only matches message content, not project name or branch
-- No CSV export for cost tracking
-- `@types/express` is in `dependencies` instead of `devDependencies`
-- `package.json` repository URL uses `tonderaisaidi/klawops` but actual repo is `TassanSaidi/KlawOps`
 
 ## [0.1.0] — 2026-03-03
 

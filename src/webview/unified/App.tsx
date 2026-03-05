@@ -323,6 +323,13 @@ export default function App() {
               setSelectedSessionId(id);
               setActiveTab('sessions');
             }}
+            onExportCsv={() => {
+              if (IS_STANDALONE) {
+                window.open('/api/export/csv', '_blank');
+              } else {
+                postToExtension({ type: 'REQUEST_CSV_EXPORT' });
+              }
+            }}
           />
         )}
 
