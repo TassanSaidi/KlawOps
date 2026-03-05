@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { getDashboardStats, getSessionList, getSessionDetailV2, getSkillAgentStats, getSessions } from '../data/reader';
+import { getDashboardStats, getSessionList, getSessionDetailV2, getSkillAgentStats, getSessions, generateSessionsCsv } from '../data/reader';
 import type { SkillAgentStatsOptions } from '../data/types';
 import { getWebviewHtml } from '../utils/webview';
 
@@ -69,6 +69,23 @@ export function openUnifiedPanel(context: vscode.ExtensionContext, options?: Uni
           }
         } catch (err) {
           unifiedPanel!.webview.postMessage({ type: 'SESSION_DETAIL_ERROR', message: String(err) });
+        }
+        break;
+      }
+
+      case 'REQUEST_CSV_EXPORT': {
+        try {
+          const csv = generateSessionsCsv();
+          const uri = await vscode.window.showSaveDialog({
+            defaultUri: vscode.Uri.file('klawops-sessions.csv'),
+            filters: { 'CSV Files': ['csv'] },
+          });
+          if (uri) {
+            await vscode.workspace.fs.writeFile(uri, Buffer.from(csv, 'utf-8'));
+            vscode.window.showInformationMessage(`Exported ${csv.split('\n').length - 1} sessions to CSV.`);
+          }
+        } catch (err) {
+          vscode.window.showErrorMessage(`CSV export failed: ${String(err)}`);
         }
         break;
       }

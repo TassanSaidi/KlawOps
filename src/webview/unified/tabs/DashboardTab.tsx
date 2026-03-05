@@ -289,11 +289,12 @@ function Loading() {
 
 // ── DashboardTab ──────────────────────────────────────────────────────────────
 
-export function DashboardTab({ stats, error, onRefresh, onOpenSession }: {
+export function DashboardTab({ stats, error, onRefresh, onOpenSession, onExportCsv }: {
   stats: DashboardStats | null;
   error: string | null;
   onRefresh: () => void;
   onOpenSession: (id: string) => void;
+  onExportCsv?: () => void;
 }) {
   if (error) {
     return (
@@ -310,9 +311,25 @@ export function DashboardTab({ stats, error, onRefresh, onOpenSession }: {
 
   return (
     <div style={{ padding: '20px', maxWidth: '1200px', margin: '0 auto' }}>
-      <div style={{ marginBottom: '20px' }}>
-        <h1 style={{ fontSize: '16px', fontWeight: 700, color: C.text, margin: '0 0 4px' }}>Overview</h1>
-        <p style={{ fontSize: '12px', color: C.muted, margin: 0 }}>Your Claude Code usage at a glance</p>
+      <div style={{ marginBottom: '20px', display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+        <div>
+          <h1 style={{ fontSize: '16px', fontWeight: 700, color: C.text, margin: '0 0 4px' }}>Overview</h1>
+          <p style={{ fontSize: '12px', color: C.muted, margin: 0 }}>Your Claude Code usage at a glance</p>
+        </div>
+        {onExportCsv && (
+          <button
+            onClick={onExportCsv}
+            style={{
+              padding: '5px 12px', borderRadius: '6px', fontSize: '11px', fontWeight: 500,
+              cursor: 'pointer', border: `1px solid ${C.border}`, background: 'transparent',
+              color: C.muted, display: 'flex', alignItems: 'center', gap: '4px',
+            }}
+            onMouseEnter={e => (e.currentTarget.style.color = C.text)}
+            onMouseLeave={e => (e.currentTarget.style.color = C.muted)}
+          >
+            Export CSV
+          </button>
+        )}
       </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '10px', marginBottom: '16px' }}>
