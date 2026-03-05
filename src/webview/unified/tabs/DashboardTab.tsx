@@ -6,54 +6,7 @@ import {
 import { format, parseISO, subWeeks, startOfWeek, addDays } from 'date-fns';
 import type { DashboardStats, DailyActivity } from '../../../data/types';
 import { C } from '../theme';
-
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
-function formatTokens(n: number): string {
-  if (n >= 1_000_000_000) { return `${(n / 1_000_000_000).toFixed(1)}B`; }
-  if (n >= 1_000_000)     { return `${(n / 1_000_000).toFixed(1)}M`; }
-  if (n >= 1_000)         { return `${(n / 1_000).toFixed(1)}K`; }
-  return n.toString();
-}
-
-function formatCost(n: number): string {
-  if (n >= 1000)   { return `$${(n / 1000).toFixed(1)}K`; }
-  if (n >= 1)      { return `$${n.toFixed(2)}`; }
-  if (n >= 0.0001) { return `$${n.toFixed(4)}`; }
-  return '$0.00';
-}
-
-function formatDuration(ms: number): string {
-  if (ms <= 0) { return '0m'; }
-  const h = Math.floor(ms / 3_600_000);
-  const m = Math.floor((ms % 3_600_000) / 60_000);
-  if (h > 0) { return `${h}h ${m}m`; }
-  return `${m}m`;
-}
-
-function timeAgo(ts: string): string {
-  const diff = Date.now() - new Date(ts).getTime();
-  const m = Math.floor(diff / 60_000);
-  if (m < 60)  { return `${m}m ago`; }
-  const h = Math.floor(m / 60);
-  if (h < 24)  { return `${h}h ago`; }
-  const d = Math.floor(h / 24);
-  return `${d}d ago`;
-}
-
-function getModelDisplayName(modelId: string): string {
-  if (modelId.includes('opus'))   { return 'Opus'; }
-  if (modelId.includes('sonnet')) { return 'Sonnet'; }
-  if (modelId.includes('haiku'))  { return 'Haiku'; }
-  return modelId;
-}
-
-function getModelColor(modelId: string): string {
-  if (modelId.includes('opus'))   { return C.primary; }
-  if (modelId.includes('sonnet')) { return C.blue; }
-  if (modelId.includes('haiku'))  { return C.green; }
-  return '#888888';
-}
+import { formatTokens, formatCost, formatDuration, timeAgo, getModelDisplayName, getModelColor } from '../format';
 
 // ── Primitives ────────────────────────────────────────────────────────────────
 

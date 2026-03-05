@@ -143,6 +143,8 @@ export interface SessionInfo {
   version: string;
   toolsUsed: Record<string, number>;
   compaction: CompactionInfo;
+  /** Truncated first user message for preview in session list. */
+  firstMessage: string;
 }
 
 export interface SessionSkillEntry {

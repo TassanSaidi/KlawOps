@@ -1,55 +1,12 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useContext } from 'react';
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip,
   ResponsiveContainer, Cell,
 } from 'recharts';
 import type { SkillAgentStats, SkillAgentEntry } from '../../../data/types';
 import { C } from '../theme';
-
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
-function formatCost(n: number): string {
-  if (n >= 1000)   { return `$${(n / 1000).toFixed(1)}K`; }
-  if (n >= 1)      { return `$${n.toFixed(2)}`; }
-  if (n >= 0.0001) { return `$${n.toFixed(4)}`; }
-  return '$0.00';
-}
-
-function formatTokens(n: number): string {
-  if (n >= 1_000_000_000) { return `${(n / 1_000_000_000).toFixed(1)}B`; }
-  if (n >= 1_000_000)     { return `${(n / 1_000_000).toFixed(1)}M`; }
-  if (n >= 1_000)         { return `${(n / 1_000).toFixed(1)}K`; }
-  return n.toString();
-}
-
-function timeAgo(ts: string): string {
-  if (!ts) { return '—'; }
-  const diff = Date.now() - new Date(ts).getTime();
-  const m = Math.floor(diff / 60_000);
-  if (m < 1)  { return 'just now'; }
-  if (m < 60) { return `${m}m ago`; }
-  const h = Math.floor(m / 60);
-  if (h < 24) { return `${h}h ago`; }
-  const d = Math.floor(h / 24);
-  if (d < 7)  { return `${d}d ago`; }
-  return `${Math.floor(d / 7)}w ago`;
-}
-
-function formatDuration(ms: number): string {
-  if (!ms || ms <= 0) { return '—'; }
-  if (ms < 1_000)     { return `${ms}ms`; }
-  const s = ms / 1_000;
-  if (s < 60)  { return `${s.toFixed(1)}s`; }
-  const min = Math.floor(s / 60);
-  const sec = Math.round(s % 60);
-  return sec > 0 ? `${min}m ${sec}s` : `${min}m`;
-}
-
-function shortDate(ts: string): string {
-  if (!ts) { return '—'; }
-  const d = new Date(ts);
-  return `${d.getMonth() + 1}/${d.getDate()} ${d.getHours().toString().padStart(2,'0')}:${d.getMinutes().toString().padStart(2,'0')}`;
-}
+import { formatCost, formatTokens, timeAgo, formatDurationDetailed as formatDuration, shortDate } from '../format';
+import { TimezoneContext } from '../App';
 
 // ── Primitives ────────────────────────────────────────────────────────────────
 
@@ -302,6 +259,7 @@ function SkillAgentTable({ entries, activeFilter, onFilterChange }: {
 // ── Skill detail view (when filtered) ────────────────────────────────────────
 
 function SkillDetailView({ entry }: { entry: SkillAgentEntry }) {
+  const timezone = useContext(TimezoneContext);
   const tdStyle: React.CSSProperties = {
     padding: '8px 12px', fontSize: '12px', color: C.text,
     borderBottom: `1px solid ${C.border}`, verticalAlign: 'middle',
@@ -364,7 +322,7 @@ function SkillDetailView({ entry }: { entry: SkillAgentEntry }) {
                     <span style={{ fontFamily: 'monospace', fontSize: 11, color: C.muted }}>{s.sessionId.slice(0, 8)}…</span>
                     {s.projectName && <span style={{ fontSize: 11, color: C.muted, marginLeft: 6 }}>{s.projectName}</span>}
                   </td>
-                  <td style={{ ...tdStyle, color: C.muted, fontSize: 11 }}>{shortDate(s.timestamp)}</td>
+                  <td style={{ ...tdStyle, color: C.muted, fontSize: 11 }}>{shortDate(s.timestamp, timezone)}</td>
                   <td style={{ ...tdStyle, textAlign: 'right' }}>{s.invocations}</td>
                   <td style={{ ...tdStyle, textAlign: 'right', color: C.muted }}>{formatTokens(s.tokens)}</td>
                   <td style={{ ...tdStyle, textAlign: 'right' }}>{formatCost(s.cost)}</td>

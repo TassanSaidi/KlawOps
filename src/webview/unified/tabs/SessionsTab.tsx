@@ -1,56 +1,9 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useContext } from 'react';
 import type { SessionInfo, SessionDetailV2 } from '../../../data/types';
 import { C } from '../theme';
 import { AgentTreeGraph } from '../components/AgentTreeGraph';
-
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
-function formatTokens(n: number): string {
-  if (n >= 1_000_000) { return `${(n / 1_000_000).toFixed(1)}M`; }
-  if (n >= 1_000)     { return `${(n / 1_000).toFixed(1)}K`; }
-  return n.toString();
-}
-
-function formatCost(n: number): string {
-  if (n >= 1000) { return `$${(n / 1000).toFixed(1)}K`; }
-  if (n >= 1)    { return `$${n.toFixed(2)}`; }
-  if (n >= 0.0001) { return `$${n.toFixed(4)}`; }
-  return '$0.00';
-}
-
-function formatDuration(ms: number): string {
-  if (ms <= 0) { return '0m'; }
-  const h = Math.floor(ms / 3_600_000);
-  const m = Math.floor((ms % 3_600_000) / 60_000);
-  if (h > 0) { return `${h}h ${m}m`; }
-  return `${m}m`;
-}
-
-function timeAgo(ts: string): string {
-  const diff = Date.now() - new Date(ts).getTime();
-  const m = Math.floor(diff / 60_000);
-  if (m < 60)  { return `${m}m ago`; }
-  const h = Math.floor(m / 60);
-  if (h < 24)  { return `${h}h ago`; }
-  return `${Math.floor(h / 24)}d ago`;
-}
-
-function formatTime(ts: string): string {
-  if (!ts) { return ''; }
-  const d    = new Date(ts);
-  const h    = d.getHours();
-  const min  = d.getMinutes().toString().padStart(2, '0');
-  const s    = d.getSeconds().toString().padStart(2, '0');
-  const ampm = h >= 12 ? 'PM' : 'AM';
-  return `${h % 12 || 12}:${min}:${s} ${ampm}`;
-}
-
-function modelColor(model: string | undefined): string {
-  if (!model) { return C.muted; }
-  if (model.toLowerCase().includes('opus'))   { return C.primary; }
-  if (model.toLowerCase().includes('sonnet')) { return C.blue; }
-  return C.green;
-}
+import { formatTokens, formatCost, formatDuration, timeAgo, formatTime, modelColor } from '../format';
+import { TimezoneContext } from '../App';
 
 // ── Primitives ────────────────────────────────────────────────────────────────
 
@@ -93,6 +46,7 @@ const MSG_LIMIT = 500;
 
 function MessageItem({ msg }: { msg: SessionDetailV2['messages'][number] }) {
   const [expanded, setExpanded] = useState(false);
+  const timezone = useContext(TimezoneContext);
   const isUser      = msg.role === 'user';
   const isTruncated = msg.content.length > MSG_LIMIT;
   const content     = expanded || !isTruncated ? msg.content : msg.content.slice(0, MSG_LIMIT) + '…';
@@ -111,7 +65,7 @@ function MessageItem({ msg }: { msg: SessionDetailV2['messages'][number] }) {
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{ display: 'flex', gap: '8px', alignItems: 'center', marginBottom: '4px', flexWrap: 'wrap' }}>
           <span style={{ fontSize: '12px', fontWeight: 600, color: C.text }}>{isUser ? 'You' : 'Claude'}</span>
-          <span style={{ fontSize: '10px', color: C.muted }}>{formatTime(msg.timestamp)}</span>
+          <span style={{ fontSize: '10px', color: C.muted }}>{formatTime(msg.timestamp, timezone)}</span>
           {!isUser && msg.model && (
             <Badge text={msg.model.includes('opus') ? 'Opus' : msg.model.includes('sonnet') ? 'Sonnet' : 'Haiku'} color={modelColor(msg.model)} />
           )}
@@ -478,13 +432,18 @@ function SessionRow({
         transition: 'background 0.1s',
       }}
     >
-      <div>
+      <div style={{ minWidth: 0, flex: 1 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '3px' }}>
           <span style={{ fontSize: '12px', fontWeight: 500, color: C.text }}>{session.projectName}</span>
           {models.map(m => (
             <Badge key={m} text={m} color={modelColor(m)} />
           ))}
         </div>
+        {session.firstMessage && (
+          <p style={{ fontSize: '11px', color: '#a1a1aa', margin: '0 0 3px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '500px' }}>
+            {session.firstMessage}
+          </p>
+        )}
         <div style={{ display: 'flex', gap: '10px', fontSize: '11px', color: C.muted }}>
           {session.gitBranch && <span>⎇ {session.gitBranch}</span>}
           <span>{formatDuration(session.duration)}</span>
@@ -625,14 +584,43 @@ export function SessionsTab({
           </div>
         ) : (
           <>
-            {sessions.map(session => (
-              <SessionRow
-                key={session.id}
-                session={session}
-                selected={false}
-                onClick={() => onSelectSession(session.id)}
-              />
-            ))}
+            {(() => {
+              // Group sessions by project, preserving overall order
+              const groups: { projectName: string; sessions: SessionInfo[] }[] = [];
+              const groupMap = new Map<string, SessionInfo[]>();
+              for (const s of sessions) {
+                const key = s.projectName;
+                let arr = groupMap.get(key);
+                if (!arr) { arr = []; groupMap.set(key, arr); groups.push({ projectName: key, sessions: arr }); }
+                arr.push(s);
+              }
+              return groups.map(group => (
+                <div key={group.projectName}>
+                  {groups.length > 1 && (
+                    <div style={{
+                      padding: '6px 16px', background: `${C.mutedDark}22`,
+                      borderBottom: `1px solid ${C.border}`,
+                      display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                    }}>
+                      <span style={{ fontSize: '11px', fontWeight: 600, color: C.muted, textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+                        {group.projectName}
+                      </span>
+                      <span style={{ fontSize: '10px', color: C.muted }}>
+                        {group.sessions.length} session{group.sessions.length !== 1 ? 's' : ''}
+                      </span>
+                    </div>
+                  )}
+                  {group.sessions.map(session => (
+                    <SessionRow
+                      key={session.id}
+                      session={session}
+                      selected={false}
+                      onClick={() => onSelectSession(session.id)}
+                    />
+                  ))}
+                </div>
+              ));
+            })()}
             {list && sessions.length < list.total && (
               <div style={{ padding: '12px 16px', textAlign: 'center' }}>
                 <button

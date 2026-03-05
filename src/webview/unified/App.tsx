@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, createContext } from 'react';
 import type { DashboardStats, SessionInfo, SessionDetailV2, SkillAgentStats } from '../../data/types';
 import { C } from './theme';
 import { DashboardTab } from './tabs/DashboardTab';
@@ -7,6 +7,64 @@ import { SkillsTab } from './tabs/SkillsTab';
 
 // Re-export so existing imports from '../App' still work
 export { C };
+
+// ── Timezone context ──────────────────────────────────────────────────────────
+
+/** IANA timezone string, e.g. 'America/New_York'. undefined = browser local. */
+export const TimezoneContext = createContext<string | undefined>(undefined);
+
+const TZ_STORAGE_KEY = 'klawops_timezone';
+
+// Common timezones grouped by region for the selector
+const TIMEZONE_OPTIONS: { label: string; zones: { value: string; label: string }[] }[] = [
+  { label: 'Auto-detect', zones: [{ value: '', label: 'Browser default' }] },
+  { label: 'Americas', zones: [
+    { value: 'America/New_York',    label: 'Eastern (ET)' },
+    { value: 'America/Chicago',     label: 'Central (CT)' },
+    { value: 'America/Denver',      label: 'Mountain (MT)' },
+    { value: 'America/Los_Angeles', label: 'Pacific (PT)' },
+    { value: 'America/Sao_Paulo',   label: 'Brasilia (BRT)' },
+  ]},
+  { label: 'Europe / Africa', zones: [
+    { value: 'Europe/London',    label: 'London (GMT/BST)' },
+    { value: 'Europe/Berlin',    label: 'Berlin (CET)' },
+    { value: 'Europe/Moscow',    label: 'Moscow (MSK)' },
+    { value: 'Africa/Johannesburg', label: 'Johannesburg (SAST)' },
+  ]},
+  { label: 'Asia / Pacific', zones: [
+    { value: 'Asia/Dubai',       label: 'Dubai (GST)' },
+    { value: 'Asia/Kolkata',     label: 'India (IST)' },
+    { value: 'Asia/Shanghai',    label: 'China (CST)' },
+    { value: 'Asia/Tokyo',       label: 'Tokyo (JST)' },
+    { value: 'Australia/Sydney', label: 'Sydney (AEST)' },
+    { value: 'Pacific/Auckland', label: 'Auckland (NZST)' },
+  ]},
+  { label: 'UTC', zones: [
+    { value: 'UTC', label: 'UTC' },
+  ]},
+];
+
+function TimezoneSelector({ value, onChange }: { value: string; onChange: (tz: string) => void }) {
+  return (
+    <select
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      style={{
+        padding: '3px 8px', borderRadius: '4px', fontSize: '11px',
+        background: C.card, color: C.muted, border: `1px solid ${C.border}`,
+        cursor: 'pointer', outline: 'none',
+      }}
+    >
+      {TIMEZONE_OPTIONS.map(group => (
+        <optgroup key={group.label} label={group.label}>
+          {group.zones.map(z => (
+            <option key={z.value} value={z.value}>{z.label}</option>
+          ))}
+        </optgroup>
+      ))}
+    </select>
+  );
+}
 
 // ── Tab bar ───────────────────────────────────────────────────────────────────
 
@@ -18,10 +76,16 @@ const TABS: { key: Tab; label: string }[] = [
   { key: 'skills',    label: 'Skills & Agents' },
 ];
 
-function TabBar({ active, onChange }: { active: Tab; onChange: (t: Tab) => void }) {
+function TabBar({ active, onChange, timezone, onTimezoneChange }: {
+  active: Tab;
+  onChange: (t: Tab) => void;
+  timezone: string;
+  onTimezoneChange: (tz: string) => void;
+}) {
   return (
     <div style={{
       display:        'flex',
+      alignItems:     'center',
       gap:            '2px',
       padding:        '8px 16px',
       borderBottom:   `1px solid ${C.border}`,
@@ -49,6 +113,9 @@ function TabBar({ active, onChange }: { active: Tab; onChange: (t: Tab) => void 
           {t.label}
         </button>
       ))}
+      <div style={{ marginLeft: 'auto' }}>
+        <TimezoneSelector value={timezone} onChange={onTimezoneChange} />
+      </div>
     </div>
   );
 }
@@ -131,6 +198,14 @@ export default function App() {
   const [activeTab, setActiveTab] = useState<Tab>('dashboard');
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
   const [skillFilter, setSkillFilter] = useState<string | null>(null);
+  const [timezone, setTimezone] = useState<string>(() => {
+    try { return localStorage.getItem(TZ_STORAGE_KEY) || ''; } catch { return ''; }
+  });
+
+  function handleTimezoneChange(tz: string) {
+    setTimezone(tz);
+    try { localStorage.setItem(TZ_STORAGE_KEY, tz); } catch { /* ignore */ }
+  }
 
   // Cached data per tab
   const [dashStats, setDashStats] = useState<DashboardStats | null>(null);
@@ -235,49 +310,51 @@ export default function App() {
   }, [selectedSessionId, requestSessionDetail]);
 
   return (
-    <div style={{ background: C.bg, color: C.text, minHeight: '100vh', fontFamily: 'system-ui, -apple-system, sans-serif', fontSize: '13px' }}>
-      <TabBar active={activeTab} onChange={setActiveTab} />
+    <TimezoneContext.Provider value={timezone || undefined}>
+      <div style={{ background: C.bg, color: C.text, minHeight: '100vh', fontFamily: 'system-ui, -apple-system, sans-serif', fontSize: '13px' }}>
+        <TabBar active={activeTab} onChange={setActiveTab} timezone={timezone} onTimezoneChange={handleTimezoneChange} />
 
-      {activeTab === 'dashboard' && (
-        <DashboardTab
-          stats={dashStats}
-          error={dashError}
-          onRefresh={requestDashboard}
-          onOpenSession={(id) => {
-            setSelectedSessionId(id);
-            setActiveTab('sessions');
-          }}
-        />
-      )}
+        {activeTab === 'dashboard' && (
+          <DashboardTab
+            stats={dashStats}
+            error={dashError}
+            onRefresh={requestDashboard}
+            onOpenSession={(id) => {
+              setSelectedSessionId(id);
+              setActiveTab('sessions');
+            }}
+          />
+        )}
 
-      {activeTab === 'sessions' && (
-        <SessionsTab
-          list={sessionList}
-          listError={sessionListError}
-          detail={sessionDetail}
-          detailError={sessionDetailError}
-          detailLoading={sessionDetailLoading}
-          selectedId={selectedSessionId}
-          onSearch={requestSessions}
-          onSelectSession={(id) => { setSelectedSessionId(id); }}
-          onBack={() => setSelectedSessionId(null)}
-          onOpenSkillsAgents={(name) => {
-            setSkillFilter(name ?? null);
-            setActiveTab('skills');
-            requestSkillsStats(undefined, name);
-          }}
-        />
-      )}
+        {activeTab === 'sessions' && (
+          <SessionsTab
+            list={sessionList}
+            listError={sessionListError}
+            detail={sessionDetail}
+            detailError={sessionDetailError}
+            detailLoading={sessionDetailLoading}
+            selectedId={selectedSessionId}
+            onSearch={requestSessions}
+            onSelectSession={(id) => { setSelectedSessionId(id); }}
+            onBack={() => setSelectedSessionId(null)}
+            onOpenSkillsAgents={(name) => {
+              setSkillFilter(name ?? null);
+              setActiveTab('skills');
+              requestSkillsStats(undefined, name);
+            }}
+          />
+        )}
 
-      {activeTab === 'skills' && (
-        <SkillsTab
-          stats={skillsStats}
-          error={skillsError}
-          initialFilter={skillFilter}
-          onFilterChange={(f) => setSkillFilter(f)}
-          onRequestStats={requestSkillsStats}
-        />
-      )}
-    </div>
+        {activeTab === 'skills' && (
+          <SkillsTab
+            stats={skillsStats}
+            error={skillsError}
+            initialFilter={skillFilter}
+            onFilterChange={(f) => setSkillFilter(f)}
+            onRequestStats={requestSkillsStats}
+          />
+        )}
+      </div>
+    </TimezoneContext.Provider>
   );
 }

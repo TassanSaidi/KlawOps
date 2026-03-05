@@ -45,10 +45,17 @@ export function calculateCost(
   );
 }
 
+const _warnedModels = new Set<string>();
+
 function findClosestPricing(model: string): ModelPricing | null {
   for (const [key, pricing] of Object.entries(MODEL_PRICING)) {
     const family = key.includes('opus') ? 'opus' : key.includes('sonnet') ? 'sonnet' : 'haiku';
     if (model.includes(family)) { return pricing; }
   }
-  return MODEL_PRICING['claude-sonnet-4-5-20250929'];
+  // Unknown model family — return null (0 cost) instead of silently guessing
+  if (!_warnedModels.has(model)) {
+    _warnedModels.add(model);
+    console.warn(`[KlawOps] Unknown model "${model}" — no pricing available, cost will be 0.`);
+  }
+  return null;
 }

@@ -62,6 +62,20 @@ function getProjectsDir(): string {
   return path.join(getClaudeDir(), 'projects');
 }
 
+// ── Session metadata cache ────────────────────────────────────────────────────
+// Avoids re-parsing unchanged JSONL files on every getSessions()/getProjects() call.
+
+const _sessionMetaCache = new Map<string, { mtimeMs: number; info: SessionInfo }>();
+
+function getCachedSessionInfo(filePath: string, projectId: string, projectName: string): SessionInfo {
+  const stat = fs.statSync(filePath);
+  const cached = _sessionMetaCache.get(filePath);
+  if (cached && cached.mtimeMs === stat.mtimeMs) { return cached.info; }
+  const info = parseSessionFile(filePath, projectId, projectName);
+  _sessionMetaCache.set(filePath, { mtimeMs: stat.mtimeMs, info });
+  return info;
+}
+
 // ── Stats cache ───────────────────────────────────────────────────────────────
 
 export function getStatsCache(): StatsCache | null {
@@ -113,35 +127,13 @@ export function getProjects(): ProjectInfo[] {
 
     for (const file of jsonlFiles) {
       const filePath = path.join(projectPath, file);
-      const stat = fs.statSync(filePath);
-      const mtime = stat.mtime.toISOString();
+      const session = getCachedSessionInfo(filePath, entry, projectIdToName(entry));
+      const mtime = fs.statSync(filePath).mtime.toISOString();
       if (!lastActive || mtime > lastActive) { lastActive = mtime; }
-
-      const lines = fs.readFileSync(filePath, 'utf-8').split('\n').filter(Boolean);
-      for (const line of lines) {
-        try {
-          const msg = JSON.parse(line) as SessionMessage;
-          if (msg.type === 'user') { totalMessages++; }
-          if (msg.type === 'assistant') {
-            totalMessages++;
-            const model = msg.message?.model || '';
-            if (model) { modelsSet.add(model); }
-            const usage = msg.message?.usage;
-            if (usage) {
-              const tokens = (usage.input_tokens || 0) + (usage.output_tokens || 0) +
-                (usage.cache_read_input_tokens || 0) + (usage.cache_creation_input_tokens || 0);
-              totalTokens += tokens;
-              estimatedCost += calculateCost(
-                model,
-                usage.input_tokens || 0,
-                usage.output_tokens || 0,
-                usage.cache_creation_input_tokens || 0,
-                usage.cache_read_input_tokens || 0
-              );
-            }
-          }
-        } catch { /* skip malformed lines */ }
-      }
+      totalMessages += session.messageCount;
+      totalTokens += session.totalInputTokens + session.totalOutputTokens + session.totalCacheReadTokens + session.totalCacheWriteTokens;
+      estimatedCost += session.estimatedCost;
+      for (const m of session.models) { modelsSet.add(m); }
     }
 
     projects.push({
@@ -153,7 +145,7 @@ export function getProjects(): ProjectInfo[] {
       totalTokens,
       estimatedCost,
       lastActive,
-      models: Array.from(modelsSet).map(getModelDisplayName),
+      models: Array.from(modelsSet),
     });
   }
 
@@ -167,7 +159,7 @@ export function getProjectSessions(projectId: string): SessionInfo[] {
   if (!fs.existsSync(projectPath)) { return []; }
   const jsonlFiles = fs.readdirSync(projectPath).filter(f => f.endsWith('.jsonl'));
   return jsonlFiles
-    .map(file => parseSessionFile(path.join(projectPath, file), projectId, projectIdToName(projectId)))
+    .map(file => getCachedSessionInfo(path.join(projectPath, file), projectId, projectIdToName(projectId)))
     .sort((a, b) => b.timestamp.localeCompare(a.timestamp));
 }
 
@@ -181,7 +173,7 @@ export function getSessions(limit = 50, offset = 0): SessionInfo[] {
     if (!fs.statSync(projectPath).isDirectory()) { continue; }
     const jsonlFiles = fs.readdirSync(projectPath).filter(f => f.endsWith('.jsonl'));
     for (const file of jsonlFiles) {
-      allSessions.push(parseSessionFile(path.join(projectPath, file), entry, projectIdToName(entry)));
+      allSessions.push(getCachedSessionInfo(path.join(projectPath, file), entry, projectIdToName(entry)));
     }
   }
 
@@ -211,7 +203,7 @@ export function getMostRecentSession(): SessionInfo | null {
   }
 
   if (!newestFile) { return null; }
-  return parseSessionFile(newestFile, newestProjectId, projectIdToName(newestProjectId));
+  return getCachedSessionInfo(newestFile, newestProjectId, projectIdToName(newestProjectId));
 }
 
 // ── Session parsing ───────────────────────────────────────────────────────────
@@ -233,6 +225,7 @@ export function parseSessionFile(filePath: string, projectId: string, projectNam
   let gitBranch = '';
   let cwd = '';
   let version = '';
+  let firstMessage = '';
   const modelsSet = new Set<string>();
   const toolsUsed: Record<string, number> = {};
 
@@ -264,6 +257,12 @@ export function parseSessionFile(filePath: string, projectId: string, projectNam
 
       if (msg.type === 'user') {
         userMessageCount++;
+        if (!firstMessage && msg.message?.content) {
+          const raw = getMessageText(msg.message.content);
+          if (raw && !raw.startsWith('[Tool Result]')) {
+            firstMessage = raw.length > 120 ? raw.slice(0, 120) + '…' : raw;
+          }
+        }
       }
 
       if (msg.type === 'assistant') {
@@ -326,6 +325,7 @@ export function parseSessionFile(filePath: string, projectId: string, projectNam
     version,
     toolsUsed,
     compaction: { compactions, microcompactions, totalTokensSaved, compactionTimestamps },
+    firstMessage,
   };
 }
 
@@ -526,9 +526,25 @@ export function searchSessions(query: string, limit = 50): SessionInfo[] {
     const projectPath = path.join(getProjectsDir(), entry);
     if (!fs.statSync(projectPath).isDirectory()) { continue; }
 
+    const projectName = projectIdToName(entry);
+    const projectNameMatch = projectName.toLowerCase().includes(lowerQuery);
     const jsonlFiles = fs.readdirSync(projectPath).filter(f => f.endsWith('.jsonl'));
     for (const file of jsonlFiles) {
       const filePath = path.join(projectPath, file);
+
+      // Check metadata first (project name, branch, first message) without re-reading file
+      if (projectNameMatch) {
+        matchingSessions.push(getCachedSessionInfo(filePath, entry, projectName));
+        continue;
+      }
+      const cached = getCachedSessionInfo(filePath, entry, projectName);
+      if (cached.gitBranch.toLowerCase().includes(lowerQuery) ||
+          cached.firstMessage.toLowerCase().includes(lowerQuery)) {
+        matchingSessions.push(cached);
+        continue;
+      }
+
+      // Fall back to full-text content search
       const lines = fs.readFileSync(filePath, 'utf-8').split('\n').filter(Boolean);
       let hasMatch = false;
 
@@ -561,7 +577,7 @@ export function searchSessions(query: string, limit = 50): SessionInfo[] {
       }
 
       if (hasMatch) {
-        matchingSessions.push(parseSessionFile(filePath, entry, projectIdToName(entry)));
+        matchingSessions.push(getCachedSessionInfo(filePath, entry, projectIdToName(entry)));
       }
     }
   }
