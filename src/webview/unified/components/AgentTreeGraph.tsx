@@ -1,20 +1,7 @@
 import React, { useState } from 'react';
 import type { AgentTreeNode } from '../../../data/types';
 import { C } from '../theme';
-
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
-function formatTokens(n: number): string {
-  if (n >= 1_000_000) { return `${(n / 1_000_000).toFixed(1)}M`; }
-  if (n >= 1_000)     { return `${(n / 1_000).toFixed(1)}K`; }
-  return n.toString();
-}
-
-function formatCost(n: number): string {
-  if (n >= 1)    { return `$${n.toFixed(2)}`; }
-  if (n >= 0.0001) { return `$${n.toFixed(4)}`; }
-  return '$0.00';
-}
+import { formatTokens, formatCost } from '../format';
 
 function maxDepth(node: AgentTreeNode): number {
   if (node.children.length === 0) { return 0; }

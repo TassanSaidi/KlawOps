@@ -6,9 +6,10 @@ export function formatTokens(n: number): string {
 }
 
 export function formatCost(n: number): string {
-  if (n >= 1000) { return `$${(n / 1000).toFixed(1)}K`; }
-  if (n >= 0.01) { return `$${n.toFixed(2)}`; }
-  return `$${n.toFixed(4)}`;
+  if (n >= 1000)   { return `$${(n / 1000).toFixed(1)}K`; }
+  if (n >= 1)      { return `$${n.toFixed(2)}`; }
+  if (n >= 0.0001) { return `$${n.toFixed(4)}`; }
+  return '$0.00';
 }
 
 export function formatDuration(ms: number): string {
