@@ -31,10 +31,14 @@ jobs:
       - name: Bundle skills
         run: tar -czf skills.tar.gz -C skills .
 
+      - name: Bundle terminal server
+        run: tar -czf server.tar.gz -C out server.js webview
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           files: |
             klawops-*.vsix
             skills.tar.gz
+            server.tar.gz
           generate_release_notes: true
