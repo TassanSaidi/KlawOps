@@ -134,6 +134,17 @@ code --install-extension klawops-0.1.1.vsix
 
 Or via VS Code: **Extensions → ⋯ → Install from VSIX…**
 
+### Update
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/TassanSaidi/KlawOps/main/update.sh | bash
+```
+
+This will:
+- Remove old VS Code extension versions and install the latest
+- Update skills (new and changed files are installed, unchanged files are skipped)
+- Update the terminal server if installed
+
 ### Uninstall
 
 ```bash
