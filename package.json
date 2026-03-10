@@ -2,7 +2,7 @@
   "name": "klawops",
   "displayName": "KlawOps",
   "description": "Claude Code session analytics, cost tracking, and AI workflow skills",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "engines": {
     "vscode": "^1.85.0"
   },
