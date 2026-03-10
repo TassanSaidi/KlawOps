@@ -11,6 +11,11 @@
 
 - **CSV export for cost tracking** — "Export CSV" button on the Dashboard exports all sessions with timestamps, token counts, costs, models, branches, and first messages. Also available as `/api/export/csv` in standalone server mode.
 
+### Fixed
+
+- **Install script now works before any GitHub Release exists** — Falls back to cloning the repo and building from source when no release artifacts are available. `server.tar.gz` is also included in the release workflow for future releases.
+- **Update script cleans up old extension versions** — The updater now uninstalls old extension versions and removes leftover extension directories before installing the new version, ensuring clean upgrades. Also adds terminal server update support and graceful handling when `code`/`node` CLI tools are missing.
+
 ### Notes
 
 - **Token estimate sanity check** — The `estimatedTokens` on tool metrics uses a `chars / 4` heuristic for tool I/O, which is reasonable for English text/JSON. These are only used for relative tool usage display, not for cost calculation (which uses accurate API-reported token counts).

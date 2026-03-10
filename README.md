@@ -129,7 +129,7 @@ This installs:
 Download `klawops-<version>.vsix` from the [Releases](https://github.com/TassanSaidi/KlawOps/releases) page, then:
 
 ```bash
-code --install-extension klawops-0.1.1.vsix
+code --install-extension klawops-0.1.2.vsix
 ```
 
 Or via VS Code: **Extensions → ⋯ → Install from VSIX…**
