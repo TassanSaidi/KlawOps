@@ -292,13 +292,25 @@ export default function App() {
 
     window.addEventListener('message', handler);
 
-    // Initial data loads
+    // Only load dashboard on init — other tabs are lazy-loaded on first visit
     requestDashboard();
-    requestSessions();
-    requestSkillsStats();
 
     return () => window.removeEventListener('message', handler);
-  }, [requestDashboard, requestSessions, requestSkillsStats]);
+  }, [requestDashboard]);
+
+  // Lazy-load: fetch data when switching to a tab that hasn't been loaded yet
+  useEffect(() => {
+    if (activeTab === 'sessions' && !sessionList && !sessionListError) {
+      requestSessions();
+    }
+    if (activeTab === 'skills' && !skillsStats && !skillsError) {
+      requestSkillsStats();
+    }
+    // Release heavy session detail data when leaving sessions tab
+    if (activeTab !== 'sessions') {
+      setSessionDetail(null);
+    }
+  }, [activeTab, sessionList, sessionListError, skillsStats, skillsError, requestSessions, requestSkillsStats]);
 
   // When selected session changes, load its detail
   useEffect(() => {

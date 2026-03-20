@@ -28,6 +28,8 @@ import type {
   CustomSkillsFile,
   ToolMetrics,
   ToolMetricEntry,
+  RateUsageStats,
+  RateUsageBucket,
 } from './types';
 
 // ── Data directory ────────────────────────────────────────────────────────────
@@ -64,15 +66,33 @@ function getProjectsDir(): string {
 
 // ── Session metadata cache ────────────────────────────────────────────────────
 // Avoids re-parsing unchanged JSONL files on every getSessions()/getProjects() call.
+// LRU-capped to prevent unbounded memory growth on large session stores.
 
+const SESSION_META_CACHE_MAX = 500;
 const _sessionMetaCache = new Map<string, { mtimeMs: number; info: SessionInfo }>();
+
+function evictOldestCacheEntries(): void {
+  if (_sessionMetaCache.size <= SESSION_META_CACHE_MAX) { return; }
+  const overflow = _sessionMetaCache.size - SESSION_META_CACHE_MAX;
+  const iter = _sessionMetaCache.keys();
+  for (let i = 0; i < overflow; i++) {
+    const key = iter.next().value;
+    if (key !== undefined) { _sessionMetaCache.delete(key); }
+  }
+}
 
 function getCachedSessionInfo(filePath: string, projectId: string, projectName: string): SessionInfo {
   const stat = fs.statSync(filePath);
   const cached = _sessionMetaCache.get(filePath);
-  if (cached && cached.mtimeMs === stat.mtimeMs) { return cached.info; }
+  if (cached && cached.mtimeMs === stat.mtimeMs) {
+    // Move to end for LRU ordering
+    _sessionMetaCache.delete(filePath);
+    _sessionMetaCache.set(filePath, cached);
+    return cached.info;
+  }
   const info = parseSessionFile(filePath, projectId, projectName);
   _sessionMetaCache.set(filePath, { mtimeMs: stat.mtimeMs, info });
+  evictOldestCacheEntries();
   return info;
 }
 
@@ -544,7 +564,9 @@ export function searchSessions(query: string, limit = 50): SessionInfo[] {
         continue;
       }
 
-      // Fall back to full-text content search
+      // Fall back to full-text content search — skip files larger than 512KB to bound RAM
+      const fileStat = fs.statSync(filePath);
+      if (fileStat.size > 512 * 1024) { continue; }
       const lines = fs.readFileSync(filePath, 'utf-8').split('\n').filter(Boolean);
       let hasMatch = false;
 
@@ -730,6 +752,163 @@ function computeSupplementalStats(afterDate: string): SupplementalStats {
   return result;
 }
 
+// ── Rate usage stats ──────────────────────────────────────────────────────────
+// Computes token/cost/call usage bucketed by hour for the current week, plus
+// per-session buckets for today's sessions. Timezone parameter (IANA string)
+// determines the week boundary (Monday 00:00 local).
+
+function computeRateUsageStats(timezoneOffsetMinutes?: number): RateUsageStats {
+  const tzOff = timezoneOffsetMinutes ?? 0;
+  const now = new Date();
+
+  // Compute "now" in the target timezone by shifting UTC
+  const nowLocal = new Date(now.getTime() + tzOff * 60_000);
+  // Week starts Monday 00:00 local
+  const dayOfWeek = nowLocal.getUTCDay(); // 0=Sun..6=Sat
+  const daysSinceMonday = dayOfWeek === 0 ? 6 : dayOfWeek - 1;
+  const weekStartLocal = new Date(Date.UTC(
+    nowLocal.getUTCFullYear(), nowLocal.getUTCMonth(), nowLocal.getUTCDate() - daysSinceMonday,
+    0, 0, 0, 0,
+  ));
+  // Convert week start back to UTC
+  const weekStartUtc = new Date(weekStartLocal.getTime() - tzOff * 60_000);
+  // Next Monday 00:00 local → UTC
+  const weekEndLocal = new Date(weekStartLocal.getTime() + 7 * 86_400_000);
+  const weekEndUtc = new Date(weekEndLocal.getTime() - tzOff * 60_000);
+
+  // Today 00:00 local → UTC
+  const todayStartLocal = new Date(Date.UTC(
+    nowLocal.getUTCFullYear(), nowLocal.getUTCMonth(), nowLocal.getUTCDate(),
+    0, 0, 0, 0,
+  ));
+  const todayStartUtc = new Date(todayStartLocal.getTime() - tzOff * 60_000);
+
+  // Current hour start in UTC
+  const currentHourStart = new Date(now);
+  currentHourStart.setMinutes(0, 0, 0);
+
+  // Hourly buckets: from weekStartUtc to now
+  const hourlyMap = new Map<number, { tokens: number; cost: number; calls: number }>();
+  // Per-session buckets for today
+  const sessionMap = new Map<string, { start: string; end: string; tokens: number; cost: number; calls: number }>();
+
+  let weeklyTokens = 0;
+  let weeklyCost = 0;
+  let weeklyCalls = 0;
+  let currentHourTokens = 0;
+
+  const projectsDir = getProjectsDir();
+  if (fs.existsSync(projectsDir)) {
+    for (const entry of fs.readdirSync(projectsDir)) {
+      const projectPath = path.join(projectsDir, entry);
+      try { if (!fs.statSync(projectPath).isDirectory()) { continue; } } catch { continue; }
+
+      for (const f of fs.readdirSync(projectPath).filter(f => f.endsWith('.jsonl'))) {
+        const filePath = path.join(projectPath, f);
+        try {
+          // Skip files untouched before the week started
+          if (fs.statSync(filePath).mtimeMs < weekStartUtc.getTime()) { continue; }
+        } catch { continue; }
+
+        const sessionId = f.replace(/\.jsonl$/, '');
+        let lines: string[];
+        try { lines = fs.readFileSync(filePath, 'utf-8').split('\n').filter(Boolean); } catch { continue; }
+
+        let sessionFirstTs = '';
+        let sessionLastTs = '';
+        let sessionTokens = 0;
+        let sessionCost = 0;
+        let sessionCalls = 0;
+
+        for (const line of lines) {
+          try {
+            const msg = JSON.parse(line) as SessionMessage;
+            if (msg.type !== 'assistant' || !msg.message?.usage || !msg.timestamp) { continue; }
+
+            const msgTime = new Date(msg.timestamp).getTime();
+            if (msgTime < weekStartUtc.getTime() || msgTime > now.getTime()) { continue; }
+
+            const u = msg.message.usage;
+            const model = msg.message.model || '';
+            const tokens = (u.input_tokens || 0) + (u.output_tokens || 0) +
+              (u.cache_read_input_tokens || 0) + (u.cache_creation_input_tokens || 0);
+            const cost = calculateCost(model, u.input_tokens || 0, u.output_tokens || 0,
+              u.cache_creation_input_tokens || 0, u.cache_read_input_tokens || 0);
+
+            weeklyTokens += tokens;
+            weeklyCost += cost;
+            weeklyCalls++;
+
+            // Hourly bucket (keyed by hour offset from weekStart)
+            const hourOffset = Math.floor((msgTime - weekStartUtc.getTime()) / 3_600_000);
+            const existing = hourlyMap.get(hourOffset);
+            if (existing) { existing.tokens += tokens; existing.cost += cost; existing.calls++; }
+            else { hourlyMap.set(hourOffset, { tokens, cost, calls: 1 }); }
+
+            // Current hour
+            if (msgTime >= currentHourStart.getTime()) {
+              currentHourTokens += tokens;
+            }
+
+            // Per-session for today
+            if (msgTime >= todayStartUtc.getTime()) {
+              if (!sessionFirstTs) { sessionFirstTs = msg.timestamp; }
+              sessionLastTs = msg.timestamp;
+              sessionTokens += tokens;
+              sessionCost += cost;
+              sessionCalls++;
+            }
+          } catch { /* skip */ }
+        }
+
+        if (sessionCalls > 0 && sessionFirstTs) {
+          sessionMap.set(sessionId, {
+            start: sessionFirstTs,
+            end: sessionLastTs || sessionFirstTs,
+            tokens: sessionTokens,
+            cost: sessionCost,
+            calls: sessionCalls,
+          });
+        }
+      }
+    }
+  }
+
+  // Build weekly buckets
+  const weeklyBuckets: RateUsageBucket[] = [];
+  const totalHours = Math.ceil((now.getTime() - weekStartUtc.getTime()) / 3_600_000);
+  for (let h = 0; h < totalHours; h++) {
+    const bucketStart = new Date(weekStartUtc.getTime() + h * 3_600_000);
+    const bucketEnd = new Date(bucketStart.getTime() + 3_600_000);
+    const data = hourlyMap.get(h);
+    weeklyBuckets.push({
+      start: bucketStart.toISOString(),
+      end: bucketEnd.toISOString(),
+      tokens: data?.tokens ?? 0,
+      cost: data?.cost ?? 0,
+      calls: data?.calls ?? 0,
+    });
+  }
+
+  // Session buckets for today
+  const sessionBuckets: RateUsageBucket[] = Array.from(sessionMap.entries())
+    .map(([_id, s]) => ({ start: s.start, end: s.end, tokens: s.tokens, cost: s.cost, calls: s.calls }))
+    .sort((a, b) => b.tokens - a.tokens);
+
+  const peakHourlyTokens = weeklyBuckets.reduce((max, b) => Math.max(max, b.tokens), 0);
+
+  return {
+    weeklyBuckets,
+    sessionBuckets,
+    weeklyTokens,
+    weeklyCost,
+    weeklyCalls,
+    weeklyResetAt: weekEndUtc.toISOString(),
+    peakHourlyTokens,
+    currentHourTokens,
+  };
+}
+
 // ── Dashboard stats ───────────────────────────────────────────────────────────
 
 export function getDashboardStats(): DashboardStats {
@@ -800,6 +979,9 @@ export function getDashboardStats(): DashboardStats {
     mergedHourCounts[hour] = (mergedHourCounts[hour] || 0) + count;
   }
 
+  // Rate usage stats — lightweight scan of this week's sessions
+  const rateUsage = computeRateUsageStats();
+
   return {
     totalSessions: (stats?.totalSessions || 0) + supplemental.totalSessions,
     totalMessages: (stats?.totalMessages || 0) + supplemental.totalMessages,
@@ -813,6 +995,7 @@ export function getDashboardStats(): DashboardStats {
     longestSession: stats?.longestSession || { sessionId: '', duration: 0, messageCount: 0, timestamp: '' },
     projectCount: projects.length,
     recentSessions: getSessions(10),
+    rateUsage,
   };
 }
 
@@ -1379,7 +1562,9 @@ export function getSessionList(opts?: { query?: string; limit?: number; offset?:
   total: number;
 } {
   const { query, limit = 50, offset = 0 } = opts || {};
-  const all = query ? searchSessions(query, 1000) : getSessions(1000, 0);
+  // Cap the backing scan — no need to load 1000 sessions when only showing 50
+  const scanLimit = Math.min(offset + limit + 50, 500);
+  const all = query ? searchSessions(query, scanLimit) : getSessions(scanLimit, 0);
   return {
     sessions: all.slice(offset, offset + limit),
     total: all.length,

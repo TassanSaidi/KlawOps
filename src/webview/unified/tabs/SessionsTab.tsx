@@ -44,7 +44,7 @@ function Badge({ text, color }: { text: string; color?: string }) {
 
 const MSG_LIMIT = 500;
 
-function MessageItem({ msg }: { msg: SessionDetailV2['messages'][number] }) {
+const MessageItem = React.memo(function MessageItem({ msg }: { msg: SessionDetailV2['messages'][number] }) {
   const [expanded, setExpanded] = useState(false);
   const timezone = useContext(TimezoneContext);
   const isUser      = msg.role === 'user';
@@ -96,7 +96,7 @@ function MessageItem({ msg }: { msg: SessionDetailV2['messages'][number] }) {
       </div>
     </div>
   );
-}
+});
 
 // ── Session detail sidebar cards ──────────────────────────────────────────────
 
@@ -297,6 +297,48 @@ function CompactionCard({ compaction }: { compaction: NonNullable<SessionDetailV
   );
 }
 
+// ── Paginated message list ─────────────────────────────────────────────────
+// Renders messages in pages of PAGE_SIZE to avoid mounting hundreds of DOM nodes at once.
+
+const MSG_PAGE_SIZE = 50;
+
+function PaginatedMessages({ messages }: { messages: SessionDetailV2['messages'] }) {
+  const [visibleCount, setVisibleCount] = useState(MSG_PAGE_SIZE);
+  const visible = messages.slice(0, visibleCount);
+  const remaining = messages.length - visibleCount;
+
+  return (
+    <Card title={`Conversation (${messages.length} messages)`}>
+      {messages.length === 0 ? (
+        <p style={{ color: C.muted, fontSize: '12px' }}>No messages to display.</p>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+          {visible.map((msg, i) => (
+            <React.Fragment key={i}>
+              {i > 0 && <div style={{ borderTop: `1px solid ${C.border}`, margin: '0 -2px' }} />}
+              <MessageItem msg={msg} />
+            </React.Fragment>
+          ))}
+          {remaining > 0 && (
+            <div style={{ textAlign: 'center', padding: '8px 0' }}>
+              <button
+                onClick={() => setVisibleCount(c => c + MSG_PAGE_SIZE)}
+                style={{
+                  padding: '6px 16px', borderRadius: '6px', fontSize: '12px',
+                  color: C.primary, background: `${C.primary}11`,
+                  border: `1px solid ${C.primary}44`, cursor: 'pointer',
+                }}
+              >
+                Show more ({remaining} remaining)
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+    </Card>
+  );
+}
+
 // ── Session detail view ───────────────────────────────────────────────────────
 
 type DetailSubTab = 'overview' | 'messages';
@@ -385,20 +427,7 @@ function SessionDetail({
       )}
 
       {subTab === 'messages' && (
-        <Card title={`Conversation (${messages.length} messages)`}>
-          {messages.length === 0 ? (
-            <p style={{ color: C.muted, fontSize: '12px' }}>No messages to display.</p>
-          ) : (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
-              {messages.map((msg, i) => (
-                <React.Fragment key={i}>
-                  {i > 0 && <div style={{ borderTop: `1px solid ${C.border}`, margin: '0 -2px' }} />}
-                  <MessageItem msg={msg} />
-                </React.Fragment>
-              ))}
-            </div>
-          )}
-        </Card>
+        <PaginatedMessages messages={messages} />
       )}
     </div>
   );

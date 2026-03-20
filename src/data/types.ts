@@ -189,6 +189,7 @@ export interface DashboardStats {
   longestSession: LongestSession;
   projectCount: number;
   recentSessions: SessionInfo[];
+  rateUsage?: RateUsageStats;
 }
 
 export interface SubAgentMetric {
@@ -276,6 +277,40 @@ export interface ToolMetrics {
 export interface SessionDetailV2 extends SessionDetail {
   agentTree: AgentTreeNode;
   toolMetrics: ToolMetrics;
+}
+
+// ── Rate usage limits ─────────────────────────────────────────────────────────
+
+export interface RateUsageBucket {
+  /** ISO date or ISO datetime string for the bucket start */
+  start: string;
+  /** ISO date or ISO datetime string for the bucket end */
+  end: string;
+  /** Total tokens consumed in this bucket */
+  tokens: number;
+  /** Total cost in this bucket */
+  cost: number;
+  /** Number of API calls in this bucket */
+  calls: number;
+}
+
+export interface RateUsageStats {
+  /** Hourly buckets for the current week (up to 168 buckets, timezone-adjusted) */
+  weeklyBuckets: RateUsageBucket[];
+  /** Per-session usage for active sessions today */
+  sessionBuckets: RateUsageBucket[];
+  /** Total tokens this week */
+  weeklyTokens: number;
+  /** Total cost this week */
+  weeklyCost: number;
+  /** Total calls this week */
+  weeklyCalls: number;
+  /** ISO timestamp of when the weekly window resets (next Monday 00:00 in user's timezone) */
+  weeklyResetAt: string;
+  /** Peak hourly token usage this week */
+  peakHourlyTokens: number;
+  /** Current hour's token usage */
+  currentHourTokens: number;
 }
 
 // ── Unified message types ─────────────────────────────────────────────────────

@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.2.0] — 2026-03-20 — Lean Edition
+
+### Performance — RAM reduction
+
+- **Debounced file watcher cascades** — Rapid sequential JSONL writes (e.g. during a single Claude turn) are now coalesced into a single refresh cycle with a 1-second debounce, preventing cascading recomputes of dashboard stats, session lists, and skills stats on every write.
+- **Debounced `pushUpdate()`** — Background webview data pushes are debounced at 1.5 seconds. Skills stats are no longer pushed on every file change (fetched on-demand when the tab is active instead).
+- **LRU-capped session metadata cache** — `_sessionMetaCache` is now capped at 500 entries with LRU eviction, preventing unbounded memory growth when scanning large session stores.
+- **Lazy tab data loading** — Only the Dashboard tab fetches data on initial mount. Sessions and Skills tabs are lazy-loaded on first visit. Session detail data is released when navigating away from the Sessions tab.
+- **Paginated message rendering** — Session detail messages are now rendered in pages of 50 instead of mounting all 500+ DOM nodes at once, with a "Show more" button for incremental loading.
+- **Memoized expensive React components** — `AgentTreeGraph` and `MessageItem` are now wrapped in `React.memo` to prevent unnecessary re-renders when parent state changes.
+- **Bounded full-text search** — Session search skips files larger than 512 KB for full-text content matching, preventing large session files from blocking the search path.
+- **Capped session list scan** — `getSessionList()` now scans at most 500 sessions (down from 1000), reducing memory and I/O overhead for the common case of viewing 50 sessions at a time.
+
+### Added
+
+- **Timezone-aware rate usage limits visualization** — New "Rate Usage" card on the Dashboard shows real-time token, cost, and API call consumption for the current week. Includes:
+  - **Weekly view**: progress bars for weekly and current-hour token usage against reference limits, daily breakdown bar chart, and week reset countdown — all adjusted to the selected timezone.
+  - **Session view**: per-session token usage for today's active sessions with progress bars and timestamps, showing session-level rate consumption at a glance.
+
 ## [0.1.2] — 2026-03-05
 
 ### Fixed
