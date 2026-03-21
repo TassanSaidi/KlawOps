@@ -165,6 +165,11 @@ const FETCH_MAP: Record<string, FetchSpec> = {
     responseType: 'SKILLS_STATS_DATA',
     errorType:    'SKILLS_STATS_ERROR',
   },
+  REQUEST_COST_ANALYSIS: {
+    url:          (m) => `/api/sessions/${m.sessionId}/cost-analysis`,
+    responseType: 'COST_ANALYSIS_DATA',
+    errorType:    'COST_ANALYSIS_ERROR',
+  },
 };
 
 async function standaloneRequest(msg: Record<string, unknown>): Promise<void> {

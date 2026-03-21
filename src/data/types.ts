@@ -264,6 +264,12 @@ export interface ToolMetricEntry {
   totalDurationMs: number;
   avgDurationMs: number;
   estimatedTokens: number;  // rough: (input JSON chars + output chars) / 4
+  /** Actual API-reported tokens from assistant turns containing this tool_use */
+  actualTokens: number;
+  /** Cost from assistant turns containing this tool_use */
+  actualCost: number;
+  /** Models used for this tool (e.g. ['Opus', 'Sonnet']) */
+  models: string[];
 }
 
 export interface ToolMetrics {
@@ -272,11 +278,31 @@ export interface ToolMetrics {
   byTool: ToolMetricEntry[];
 }
 
+// ── Cost optimization analysis ──────────────────────────────────────────────
+
+export interface CostOptimizationSuggestion {
+  toolName: string;
+  currentModel: string;
+  suggestedModel: string;
+  reason: string;
+  estimatedSavings: number;  // percentage
+  tokenCount: number;
+  callCount: number;
+}
+
+export interface CostAnalysis {
+  suggestions: CostOptimizationSuggestion[];
+  summary: string;
+  totalPotentialSavings: string;
+}
+
 // ── Session detail with agent tree ───────────────────────────────────────────
 
 export interface SessionDetailV2 extends SessionDetail {
   agentTree: AgentTreeNode;
   toolMetrics: ToolMetrics;
+  /** Lazy-loaded cost optimization analysis from Claude API */
+  costAnalysis?: CostAnalysis;
 }
 
 // ── Rate usage limits ─────────────────────────────────────────────────────────
@@ -319,7 +345,8 @@ export type UnifiedRequest =
   | { type: 'REQUEST_STATS' }
   | { type: 'REQUEST_SESSION_LIST'; query?: string; limit?: number; offset?: number }
   | { type: 'REQUEST_SESSION_DETAIL'; sessionId: string }
-  | { type: 'REQUEST_SKILLS_STATS'; timeRange?: string; filter?: string };
+  | { type: 'REQUEST_SKILLS_STATS'; timeRange?: string; filter?: string }
+  | { type: 'REQUEST_COST_ANALYSIS'; sessionId: string };
 
 export type UnifiedResponse =
   | { type: 'STATS_DATA'; payload: DashboardStats }
@@ -330,6 +357,8 @@ export type UnifiedResponse =
   | { type: 'SESSION_DETAIL_ERROR'; message: string }
   | { type: 'SKILLS_STATS_DATA'; payload: SkillAgentStats }
   | { type: 'SKILLS_STATS_ERROR'; message: string }
+  | { type: 'COST_ANALYSIS_DATA'; payload: CostAnalysis }
+  | { type: 'COST_ANALYSIS_ERROR'; message: string }
   | { type: 'NAVIGATE'; tab: string; sessionId?: string; skillFilter?: string };
 
 export interface CustomSkillConfig {

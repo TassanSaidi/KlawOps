@@ -15,6 +15,8 @@
 
 ### Added
 
+- **Per-tool token & cost breakdown** — The session detail overview now shows a comprehensive `ToolTokenBreakdown` component replacing the old `ToolsUsed` and `ToolMetricsCard` widgets. Each tool displays actual token count, cost attribution, model badges, and proportional stacked bar visualization. Sortable by tokens, cost, call count, or duration.
+- **Cost optimization analysis (lazy-loaded)** — New `CostAnalysisCard` lets you ask Claude (via Haiku) which tools in a session could have used a cheaper model. Shows per-tool suggestions with current→suggested model, estimated savings percentage, and reasoning. Lazy: only runs when the user clicks "Analyze". Available in both VS Code extension and standalone server mode.
 - **Timezone-aware rate usage limits visualization** — New "Rate Usage" card on the Dashboard shows real-time token, cost, and API call consumption for the current week. Includes:
   - **Weekly view**: progress bars for weekly and current-hour token usage against reference limits, daily breakdown bar chart, and week reset countdown — all adjusted to the selected timezone.
   - **Session view**: per-session token usage for today's active sessions with progress bars and timestamps, showing session-level rate consumption at a glance.

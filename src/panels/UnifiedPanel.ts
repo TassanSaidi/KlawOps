@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { getDashboardStats, getSessionList, getSessionDetailV2, getSkillAgentStats, getSessions, generateSessionsCsv } from '../data/reader';
+import { getDashboardStats, getSessionList, getSessionDetailV2, getSkillAgentStats, getSessions, generateSessionsCsv, analyzeCostOptimization } from '../data/reader';
 import type { SkillAgentStatsOptions } from '../data/types';
 import { getWebviewHtml } from '../utils/webview';
 
@@ -101,6 +101,17 @@ export function openUnifiedPanel(context: vscode.ExtensionContext, options?: Uni
           unifiedPanel!.webview.postMessage({ type: 'SKILLS_STATS_DATA', payload: stats });
         } catch (err) {
           unifiedPanel!.webview.postMessage({ type: 'SKILLS_STATS_ERROR', message: String(err) });
+        }
+        break;
+      }
+
+      case 'REQUEST_COST_ANALYSIS': {
+        if (!msg.sessionId) { break; }
+        try {
+          const analysis = await analyzeCostOptimization(msg.sessionId);
+          unifiedPanel!.webview.postMessage({ type: 'COST_ANALYSIS_DATA', payload: analysis });
+        } catch (err) {
+          unifiedPanel!.webview.postMessage({ type: 'COST_ANALYSIS_ERROR', message: String(err) });
         }
         break;
       }
