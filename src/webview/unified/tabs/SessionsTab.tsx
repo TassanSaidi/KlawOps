@@ -1,9 +1,9 @@
 import React, { useState, useEffect, useRef, useContext } from 'react';
-import type { SessionInfo, SessionDetailV2 } from '../../../data/types';
+import type { SessionInfo, SessionDetailV2, CostAnalysis } from '../../../data/types';
 import { C } from '../theme';
 import { AgentTreeGraph } from '../components/AgentTreeGraph';
-import { formatTokens, formatCost, formatDuration, timeAgo, formatTime, modelColor } from '../format';
-import { TimezoneContext } from '../App';
+import { formatTokens, formatCost, formatDuration, timeAgo, formatTime, modelColor, getModelDisplayName } from '../format';
+import { TimezoneContext, postToExtension } from '../App';
 
 // ── Primitives ────────────────────────────────────────────────────────────────
 
@@ -44,7 +44,7 @@ function Badge({ text, color }: { text: string; color?: string }) {
 
 const MSG_LIMIT = 500;
 
-function MessageItem({ msg }: { msg: SessionDetailV2['messages'][number] }) {
+const MessageItem = React.memo(function MessageItem({ msg }: { msg: SessionDetailV2['messages'][number] }) {
   const [expanded, setExpanded] = useState(false);
   const timezone = useContext(TimezoneContext);
   const isUser      = msg.role === 'user';
@@ -96,7 +96,7 @@ function MessageItem({ msg }: { msg: SessionDetailV2['messages'][number] }) {
       </div>
     </div>
   );
-}
+});
 
 // ── Session detail sidebar cards ──────────────────────────────────────────────
 
@@ -121,17 +121,171 @@ function TokenBreakdown({ session }: { session: SessionDetailV2 }) {
   );
 }
 
-function ToolsUsed({ tools }: { tools: [string, number][] }) {
+// ── Tool Token Breakdown — replaces old ToolsUsed + ToolMetricsCard ──────────
+
+type ToolSortKey = 'tokens' | 'cost' | 'count' | 'duration';
+
+function ToolTokenBreakdown({ session }: { session: SessionDetailV2 }) {
+  const [sortBy, setSortBy] = useState<ToolSortKey>('tokens');
+  const [expanded, setExpanded] = useState(false);
+
+  const toolMetrics = session.toolMetrics;
+  if (!toolMetrics || toolMetrics.byTool.length === 0) { return null; }
+
+  const sorted = [...toolMetrics.byTool].sort((a, b) => {
+    if (sortBy === 'tokens')   return b.actualTokens - a.actualTokens;
+    if (sortBy === 'cost')     return b.actualCost - a.actualCost;
+    if (sortBy === 'count')    return b.count - a.count;
+    if (sortBy === 'duration') return b.totalDurationMs - a.totalDurationMs;
+    return 0;
+  });
+
+  const display = expanded ? sorted : sorted.slice(0, 10);
+  const maxTokens = sorted[0]?.actualTokens || sorted[0]?.estimatedTokens || 1;
+  const totalTokens = sorted.reduce((s, t) => s + (t.actualTokens || t.estimatedTokens), 0);
+  const totalCost = sorted.reduce((s, t) => s + t.actualCost, 0);
+
+  function fmtDur(ms: number): string {
+    if (ms <= 0)      return '—';
+    if (ms < 1_000)   return `${ms}ms`;
+    const s = ms / 1_000;
+    if (s < 60)       return `${s.toFixed(1)}s`;
+    const min = Math.floor(s / 60);
+    const sec = Math.round(s % 60);
+    return sec > 0 ? `${min}m ${sec}s` : `${min}m`;
+  }
+
+  function modelBadge(models: string[]): React.ReactNode {
+    if (!models || models.length === 0) return null;
+    return models.map(m => {
+      const display = getModelDisplayName(m);
+      return (
+        <span key={m} style={{
+          fontSize: '9px', padding: '1px 4px', borderRadius: '3px',
+          background: C.mutedDark, color: modelColor(m), fontFamily: 'monospace',
+        }}>{display}</span>
+      );
+    });
+  }
+
+  const toolColor = (name: string): string => {
+    const colors = [C.primary, C.blue, C.green, C.amber, C.agent, '#e879f9', '#22d3ee', '#f472b6'];
+    let hash = 0;
+    for (let i = 0; i < name.length; i++) { hash = name.charCodeAt(i) + ((hash << 5) - hash); }
+    return colors[Math.abs(hash) % colors.length];
+  };
+
+  const sortBtn = (key: ToolSortKey, label: string) => (
+    <button
+      onClick={() => setSortBy(key)}
+      style={{
+        padding: '2px 7px', borderRadius: '4px', fontSize: '10px', fontWeight: 500,
+        cursor: 'pointer', border: 'none',
+        background: sortBy === key ? `${C.primary}22` : 'transparent',
+        color: sortBy === key ? C.primary : C.muted,
+      }}
+    >{label}</button>
+  );
+
   return (
-    <Card title="Tools Used">
-      <div style={{ display: 'flex', flexDirection: 'column', gap: '5px' }}>
-        {tools.map(([name, count]) => (
-          <div key={name} style={{ display: 'flex', justifyContent: 'space-between' }}>
-            <span style={{ fontSize: '11px', color: C.text, fontFamily: 'monospace', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '130px' }}>{name}</span>
-            <span style={{ fontSize: '10px', color: C.muted }}>{count}×</span>
-          </div>
-        ))}
+    <Card>
+      {/* Header */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
+        <p style={{ fontSize: '11px', fontWeight: 600, color: C.muted, textTransform: 'uppercase', letterSpacing: '0.05em', margin: 0 }}>
+          Tool Token Breakdown
+        </p>
+        <div style={{ display: 'flex', gap: '2px' }}>
+          {sortBtn('tokens', 'Tokens')}
+          {sortBtn('cost', 'Cost')}
+          {sortBtn('count', 'Calls')}
+          {sortBtn('duration', 'Time')}
+        </div>
       </div>
+
+      {/* Summary */}
+      <div style={{ display: 'flex', gap: '16px', marginBottom: '12px', paddingBottom: '10px', borderBottom: `1px solid ${C.border}` }}>
+        <div>
+          <p style={{ fontSize: '14px', fontWeight: 700, color: C.text, margin: 0 }}>{formatTokens(totalTokens)}</p>
+          <p style={{ fontSize: '10px', color: C.muted, margin: '1px 0 0', textTransform: 'uppercase' }}>Tool tokens</p>
+        </div>
+        <div>
+          <p style={{ fontSize: '14px', fontWeight: 700, color: C.text, margin: 0 }}>{formatCost(totalCost)}</p>
+          <p style={{ fontSize: '10px', color: C.muted, margin: '1px 0 0', textTransform: 'uppercase' }}>Tool cost</p>
+        </div>
+        <div>
+          <p style={{ fontSize: '14px', fontWeight: 700, color: C.text, margin: 0 }}>{fmtDur(toolMetrics.totalDurationMs)}</p>
+          <p style={{ fontSize: '10px', color: C.muted, margin: '1px 0 0', textTransform: 'uppercase' }}>Total wait</p>
+        </div>
+        <div>
+          <p style={{ fontSize: '14px', fontWeight: 700, color: C.text, margin: 0 }}>{sorted.length}</p>
+          <p style={{ fontSize: '10px', color: C.muted, margin: '1px 0 0', textTransform: 'uppercase' }}>Tools</p>
+        </div>
+      </div>
+
+      {/* Stacked bar overview */}
+      <div style={{ height: '12px', background: C.mutedDark, borderRadius: '6px', overflow: 'hidden', display: 'flex', marginBottom: '12px' }}>
+        {sorted.filter(t => (t.actualTokens || t.estimatedTokens) > 0).slice(0, 8).map(t => {
+          const tok = t.actualTokens || t.estimatedTokens;
+          const pct = totalTokens > 0 ? (tok / totalTokens) * 100 : 0;
+          if (pct < 1) return null;
+          return (
+            <div key={t.name} title={`${t.name}: ${formatTokens(tok)}`} style={{
+              width: `${pct}%`, height: '100%', background: toolColor(t.name),
+              minWidth: '3px',
+            }} />
+          );
+        })}
+      </div>
+
+      {/* Per-tool rows */}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+        {display.map(t => {
+          const tok = t.actualTokens || t.estimatedTokens;
+          const barPct = maxTokens > 0 ? (tok / maxTokens) * 100 : 0;
+          const color = toolColor(t.name);
+          return (
+            <div key={t.name}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '2px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '6px', minWidth: 0 }}>
+                  <div style={{ width: '8px', height: '8px', borderRadius: '2px', background: color, flexShrink: 0 }} />
+                  <span style={{ fontSize: '11px', color: C.text, fontFamily: 'monospace', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={t.name}>{t.name}</span>
+                  {modelBadge(t.models)}
+                </div>
+                <div style={{ display: 'flex', gap: '8px', flexShrink: 0, alignItems: 'center' }}>
+                  <span style={{ fontSize: '10px', color: C.muted }}>{t.count}×</span>
+                  <span style={{ fontSize: '10px', color: C.text, fontFamily: 'monospace', minWidth: '40px', textAlign: 'right' }}>{formatTokens(tok)}</span>
+                  {t.actualCost > 0 && (
+                    <span style={{ fontSize: '10px', color: C.primary, fontFamily: 'monospace', minWidth: '45px', textAlign: 'right' }}>{formatCost(t.actualCost)}</span>
+                  )}
+                </div>
+              </div>
+              <div style={{ height: '4px', background: C.border, borderRadius: '2px', overflow: 'hidden' }}>
+                <div style={{ height: '100%', width: `${barPct}%`, background: color, borderRadius: '2px', transition: 'width 0.2s' }} />
+              </div>
+              {(t.avgDurationMs > 0 || (totalTokens > 0 && tok > 0)) && (
+                <div style={{ display: 'flex', gap: '12px', marginTop: '2px' }}>
+                  {t.avgDurationMs > 0 && (
+                    <span style={{ fontSize: '10px', color: C.muted }}>avg {fmtDur(t.avgDurationMs)}</span>
+                  )}
+                  {totalTokens > 0 && tok > 0 && (
+                    <span style={{ fontSize: '10px', color: C.muted }}>{((tok / totalTokens) * 100).toFixed(0)}% of total</span>
+                  )}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Show more / less */}
+      {sorted.length > 10 && (
+        <button
+          onClick={() => setExpanded(e => !e)}
+          style={{ marginTop: '8px', fontSize: '10px', color: C.primary, background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}
+        >
+          {expanded ? '▲ Show fewer' : `▼ Show all ${sorted.length} tools`}
+        </button>
+      )}
     </Card>
   );
 }
@@ -213,62 +367,138 @@ function SkillsAgentsCard({
   );
 }
 
-function ToolMetricsCard({ toolMetrics }: { toolMetrics: SessionDetailV2['toolMetrics'] }) {
-  if (!toolMetrics || toolMetrics.byTool.length === 0) { return null; }
+// ── Cost Analysis Card (lazy-loaded via Claude API) ──────────────────────────
 
-  function fmtDur(ms: number): string {
-    if (ms <= 0)      { return '—'; }
-    if (ms < 1_000)   { return `${ms}ms`; }
-    const s = ms / 1_000;
-    if (s < 60)       { return `${s.toFixed(1)}s`; }
-    const min = Math.floor(s / 60);
-    const sec = Math.round(s % 60);
-    return sec > 0 ? `${min}m ${sec}s` : `${min}m`;
+function CostAnalysisCard({ sessionId, costAnalysis }: { sessionId: string; costAnalysis?: CostAnalysis }) {
+  const [analysis, setAnalysis] = useState<CostAnalysis | null>(costAnalysis ?? null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  // Listen for cost analysis responses
+  useEffect(() => {
+    const handler = (event: MessageEvent) => {
+      const msg = event.data;
+      if (msg.type === 'COST_ANALYSIS_DATA') {
+        setAnalysis(msg.payload);
+        setLoading(false);
+        setError(null);
+      } else if (msg.type === 'COST_ANALYSIS_ERROR') {
+        setError(msg.message || 'Analysis failed.');
+        setLoading(false);
+      }
+    };
+    window.addEventListener('message', handler);
+    return () => window.removeEventListener('message', handler);
+  }, []);
+
+  function requestAnalysis() {
+    setLoading(true);
+    setError(null);
+    postToExtension({ type: 'REQUEST_COST_ANALYSIS', sessionId });
   }
 
-  function fmtTok(n: number): string {
-    if (n >= 1_000_000) { return `${(n / 1_000_000).toFixed(1)}M`; }
-    if (n >= 1_000)     { return `${(n / 1_000).toFixed(1)}K`; }
-    return n.toString();
+  if (!analysis && !loading && !error) {
+    return (
+      <Card>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <div>
+            <p style={{ fontSize: '11px', fontWeight: 600, color: C.muted, textTransform: 'uppercase', letterSpacing: '0.05em', margin: '0 0 4px' }}>
+              Cost Optimization
+            </p>
+            <p style={{ fontSize: '11px', color: C.muted, margin: 0 }}>
+              Ask Claude which tools could use a cheaper model
+            </p>
+          </div>
+          <button
+            onClick={requestAnalysis}
+            style={{
+              padding: '6px 14px', borderRadius: '6px', fontSize: '11px', fontWeight: 500,
+              cursor: 'pointer', border: `1px solid ${C.primary}44`,
+              background: `${C.primary}11`, color: C.primary,
+            }}
+          >
+            Analyze
+          </button>
+        </div>
+      </Card>
+    );
   }
 
-  const top = toolMetrics.byTool.slice(0, 8);
-  const maxMs = top[0]?.totalDurationMs || 1;
+  if (loading) {
+    return (
+      <Card title="Cost Optimization">
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '12px 0' }}>
+          <div style={{ width: '16px', height: '16px', borderRadius: '50%', border: `2px solid ${C.border}`, borderTopColor: C.primary, animation: 'spin 0.8s linear infinite' }} />
+          <span style={{ fontSize: '11px', color: C.muted }}>Analyzing with Claude Haiku...</span>
+          <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+        </div>
+      </Card>
+    );
+  }
+
+  if (error) {
+    return (
+      <Card title="Cost Optimization">
+        <p style={{ fontSize: '11px', color: '#f87171', margin: '0 0 8px' }}>{error}</p>
+        <button onClick={requestAnalysis} style={{ fontSize: '10px', color: C.primary, background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}>
+          Retry
+        </button>
+      </Card>
+    );
+  }
+
+  if (!analysis) return null;
 
   return (
-    <Card title="Tool Performance">
-      {/* Summary row */}
-      <div style={{ display: 'flex', gap: '16px', marginBottom: '10px', paddingBottom: '10px', borderBottom: `1px solid ${C.border}` }}>
-        <div>
-          <p style={{ fontSize: '14px', fontWeight: 700, color: C.text, margin: 0 }}>{fmtDur(toolMetrics.totalDurationMs)}</p>
-          <p style={{ fontSize: '10px', color: C.muted, margin: '1px 0 0', textTransform: 'uppercase', letterSpacing: '0.04em' }}>Total wait</p>
+    <Card>
+      <p style={{ fontSize: '11px', fontWeight: 600, color: C.muted, textTransform: 'uppercase', letterSpacing: '0.05em', margin: '0 0 8px' }}>
+        Cost Optimization
+      </p>
+
+      {/* Potential savings headline */}
+      {analysis.totalPotentialSavings && analysis.totalPotentialSavings !== 'N/A' && (
+        <div style={{ padding: '8px 12px', borderRadius: '6px', background: `${C.green}12`, border: `1px solid ${C.green}30`, marginBottom: '10px' }}>
+          <p style={{ fontSize: '13px', fontWeight: 600, color: C.green, margin: 0 }}>
+            Potential savings: {analysis.totalPotentialSavings}
+          </p>
         </div>
-        <div>
-          <p style={{ fontSize: '14px', fontWeight: 700, color: C.text, margin: 0 }}>~{fmtTok(toolMetrics.estimatedTokens)}</p>
-          <p style={{ fontSize: '10px', color: C.muted, margin: '1px 0 0', textTransform: 'uppercase', letterSpacing: '0.04em' }}>Est. tokens</p>
-        </div>
-      </div>
-      {/* Per-tool breakdown */}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: '7px' }}>
-        {top.map(t => (
-          <div key={t.name}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '2px' }}>
-              <span style={{ fontSize: '11px', color: C.text, fontFamily: 'monospace', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '120px' }} title={t.name}>{t.name}</span>
-              <div style={{ display: 'flex', gap: '8px', flexShrink: 0 }}>
-                <span style={{ fontSize: '10px', color: C.muted }}>{t.count}×</span>
-                <span style={{ fontSize: '10px', color: C.text, fontFamily: 'monospace' }}>{fmtDur(t.totalDurationMs)}</span>
+      )}
+
+      {/* Summary */}
+      <p style={{ fontSize: '11px', color: C.text, lineHeight: '1.5', margin: '0 0 10px' }}>
+        {analysis.summary}
+      </p>
+
+      {/* Per-tool suggestions */}
+      {analysis.suggestions.length > 0 && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+          {analysis.suggestions.map((s, i) => (
+            <div key={i} style={{ padding: '8px 10px', borderRadius: '6px', border: `1px solid ${C.border}`, background: `${C.mutedDark}22` }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px' }}>
+                <span style={{ fontSize: '11px', fontFamily: 'monospace', color: C.text, fontWeight: 500 }}>{s.toolName}</span>
+                <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
+                  <span style={{ fontSize: '10px', color: C.muted, textDecoration: 'line-through' }}>{s.currentModel}</span>
+                  <span style={{ fontSize: '10px', color: C.muted }}>→</span>
+                  <span style={{ fontSize: '10px', padding: '1px 5px', borderRadius: '3px', background: `${C.green}20`, color: C.green, fontWeight: 600 }}>{s.suggestedModel}</span>
+                </div>
+              </div>
+              <p style={{ fontSize: '10px', color: C.muted, margin: '0 0 3px', lineHeight: '1.4' }}>{s.reason}</p>
+              <div style={{ display: 'flex', gap: '10px' }}>
+                <span style={{ fontSize: '10px', color: C.muted }}>{s.callCount} calls</span>
+                <span style={{ fontSize: '10px', color: C.muted }}>{formatTokens(s.tokenCount)} tok</span>
+                {s.estimatedSavings > 0 && (
+                  <span style={{ fontSize: '10px', color: C.green }}>~{s.estimatedSavings}% savings</span>
+                )}
               </div>
             </div>
-            {/* Duration bar */}
-            <div style={{ height: '3px', background: C.border, borderRadius: '2px', overflow: 'hidden' }}>
-              <div style={{ height: '100%', width: `${(t.totalDurationMs / maxMs) * 100}%`, background: C.blue, borderRadius: '2px' }} />
-            </div>
-            {t.avgDurationMs > 0 && (
-              <p style={{ fontSize: '10px', color: C.muted, margin: '2px 0 0' }}>avg {fmtDur(t.avgDurationMs)} · ~{fmtTok(t.estimatedTokens)} tokens</p>
-            )}
-          </div>
-        ))}
-      </div>
+          ))}
+        </div>
+      )}
+
+      {/* Re-analyze */}
+      <button onClick={requestAnalysis} style={{ marginTop: '8px', fontSize: '10px', color: C.muted, background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}>
+        Re-analyze
+      </button>
     </Card>
   );
 }
@@ -297,6 +527,48 @@ function CompactionCard({ compaction }: { compaction: NonNullable<SessionDetailV
   );
 }
 
+// ── Paginated message list ─────────────────────────────────────────────────
+// Renders messages in pages of PAGE_SIZE to avoid mounting hundreds of DOM nodes at once.
+
+const MSG_PAGE_SIZE = 50;
+
+function PaginatedMessages({ messages }: { messages: SessionDetailV2['messages'] }) {
+  const [visibleCount, setVisibleCount] = useState(MSG_PAGE_SIZE);
+  const visible = messages.slice(0, visibleCount);
+  const remaining = messages.length - visibleCount;
+
+  return (
+    <Card title={`Conversation (${messages.length} messages)`}>
+      {messages.length === 0 ? (
+        <p style={{ color: C.muted, fontSize: '12px' }}>No messages to display.</p>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+          {visible.map((msg, i) => (
+            <React.Fragment key={i}>
+              {i > 0 && <div style={{ borderTop: `1px solid ${C.border}`, margin: '0 -2px' }} />}
+              <MessageItem msg={msg} />
+            </React.Fragment>
+          ))}
+          {remaining > 0 && (
+            <div style={{ textAlign: 'center', padding: '8px 0' }}>
+              <button
+                onClick={() => setVisibleCount(c => c + MSG_PAGE_SIZE)}
+                style={{
+                  padding: '6px 16px', borderRadius: '6px', fontSize: '12px',
+                  color: C.primary, background: `${C.primary}11`,
+                  border: `1px solid ${C.primary}44`, cursor: 'pointer',
+                }}
+              >
+                Show more ({remaining} remaining)
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+    </Card>
+  );
+}
+
 // ── Session detail view ───────────────────────────────────────────────────────
 
 type DetailSubTab = 'overview' | 'messages';
@@ -313,7 +585,7 @@ function SessionDetail({
   const messages     = session.messages || [];
   const compaction   = session.compaction || { compactions: 0, microcompactions: 0, totalTokensSaved: 0, compactionTimestamps: [] };
   const compCount    = compaction.compactions + compaction.microcompactions;
-  const topTools     = Object.entries(session.toolsUsed || {}).sort((a, b) => b[1] - a[1]).slice(0, 10);
+
   const skills       = session.skillsInSession || [];
   const agents       = session.agentsInSession || [];
   const agentTree    = session.agentTree;
@@ -375,9 +647,9 @@ function SessionDetail({
           {/* Right: sidebar cards */}
           <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
             <SkillsAgentsCard skills={skills} agents={agents} onOpenSkillsAgents={onOpenSkillsAgents} />
-            <ToolMetricsCard toolMetrics={session.toolMetrics} />
+            <ToolTokenBreakdown session={session} />
             <TokenBreakdown session={session} />
-            {topTools.length > 0 && <ToolsUsed tools={topTools} />}
+            <CostAnalysisCard sessionId={session.sessionId} costAnalysis={session.costAnalysis} />
             {compCount > 0 && <CompactionCard compaction={compaction} />}
             <MetadataCard session={session} />
           </div>
@@ -385,20 +657,7 @@ function SessionDetail({
       )}
 
       {subTab === 'messages' && (
-        <Card title={`Conversation (${messages.length} messages)`}>
-          {messages.length === 0 ? (
-            <p style={{ color: C.muted, fontSize: '12px' }}>No messages to display.</p>
-          ) : (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
-              {messages.map((msg, i) => (
-                <React.Fragment key={i}>
-                  {i > 0 && <div style={{ borderTop: `1px solid ${C.border}`, margin: '0 -2px' }} />}
-                  <MessageItem msg={msg} />
-                </React.Fragment>
-              ))}
-            </div>
-          )}
-        </Card>
+        <PaginatedMessages messages={messages} />
       )}
     </div>
   );

@@ -136,7 +136,7 @@ function TreeNodeSvg({ node, maxTokens, svgWidth }: { node: LayoutNode; maxToken
 
 // ── AgentTreeGraph ────────────────────────────────────────────────────────────
 
-export function AgentTreeGraph({ tree }: { tree: AgentTreeNode }) {
+export const AgentTreeGraph = React.memo(function AgentTreeGraph({ tree }: { tree: AgentTreeNode }) {
   const SVG_W    = 800;
   const depth    = maxDepth(tree);
   const svgHeight = Math.max(200, (depth + 1) * 120 + 60);
@@ -200,4 +200,4 @@ export function AgentTreeGraph({ tree }: { tree: AgentTreeNode }) {
       )}
     </div>
   );
-}
+});

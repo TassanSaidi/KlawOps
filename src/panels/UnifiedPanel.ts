@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { getDashboardStats, getSessionList, getSessionDetailV2, getSkillAgentStats, getSessions, generateSessionsCsv } from '../data/reader';
+import { getDashboardStats, getSessionList, getSessionDetailV2, getSkillAgentStats, getSessions, generateSessionsCsv, analyzeCostOptimization } from '../data/reader';
 import type { SkillAgentStatsOptions } from '../data/types';
 import { getWebviewHtml } from '../utils/webview';
 
@@ -104,6 +104,17 @@ export function openUnifiedPanel(context: vscode.ExtensionContext, options?: Uni
         }
         break;
       }
+
+      case 'REQUEST_COST_ANALYSIS': {
+        if (!msg.sessionId) { break; }
+        try {
+          const analysis = await analyzeCostOptimization(msg.sessionId);
+          unifiedPanel!.webview.postMessage({ type: 'COST_ANALYSIS_DATA', payload: analysis });
+        } catch (err) {
+          unifiedPanel!.webview.postMessage({ type: 'COST_ANALYSIS_ERROR', message: String(err) });
+        }
+        break;
+      }
     }
   });
 
@@ -117,19 +128,24 @@ export function openUnifiedPanel(context: vscode.ExtensionContext, options?: Uni
   }
 }
 
-// Called by file watcher in extension.ts to push live data updates
+// Called by file watcher in extension.ts to push live data updates.
+// Debounced to coalesce rapid successive file writes (e.g. during a single Claude turn).
+let _pushTimer: ReturnType<typeof setTimeout> | undefined;
+const PUSH_DEBOUNCE_MS = 1_500;
+
 export function pushUpdate(): void {
   if (!unifiedPanel) { return; }
-  try {
-    const stats = getDashboardStats();
-    unifiedPanel.webview.postMessage({ type: 'STATS_DATA', payload: stats });
-  } catch { /* ignore errors during background refresh */ }
-  try {
-    const skills = getSkillAgentStats({});
-    unifiedPanel.webview.postMessage({ type: 'SKILLS_STATS_DATA', payload: skills });
-  } catch { /* ignore */ }
-  try {
-    const result = getSessionList({ limit: 50, offset: 0 });
-    unifiedPanel.webview.postMessage({ type: 'SESSION_LIST_DATA', payload: result });
-  } catch { /* ignore */ }
+  if (_pushTimer) { clearTimeout(_pushTimer); }
+  _pushTimer = setTimeout(() => {
+    if (!unifiedPanel) { return; }
+    try {
+      const stats = getDashboardStats();
+      unifiedPanel.webview.postMessage({ type: 'STATS_DATA', payload: stats });
+    } catch { /* ignore errors during background refresh */ }
+    try {
+      const result = getSessionList({ limit: 50, offset: 0 });
+      unifiedPanel.webview.postMessage({ type: 'SESSION_LIST_DATA', payload: result });
+    } catch { /* ignore */ }
+    // Skills stats are expensive — skip on background push, let user request on tab switch
+  }, PUSH_DEBOUNCE_MS);
 }

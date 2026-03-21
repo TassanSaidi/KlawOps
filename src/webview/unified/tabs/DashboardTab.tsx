@@ -1,12 +1,13 @@
-import React, { useState } from 'react';
+import React, { useState, useContext } from 'react';
 import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip,
   ResponsiveContainer, PieChart, Pie, Cell, BarChart, Bar,
 } from 'recharts';
 import { format, parseISO, subWeeks, startOfWeek, addDays } from 'date-fns';
-import type { DashboardStats, DailyActivity } from '../../../data/types';
+import type { DashboardStats, DailyActivity, RateUsageStats } from '../../../data/types';
 import { C } from '../theme';
 import { formatTokens, formatCost, formatDuration, timeAgo, getModelDisplayName, getModelColor } from '../format';
+import { TimezoneContext } from '../App';
 
 // ── Primitives ────────────────────────────────────────────────────────────────
 
@@ -275,6 +276,196 @@ function RecentSessions({ sessions, onOpenSession }: {
   );
 }
 
+// ── Rate Usage Limits ──────────────────────────────────────────────────────────
+
+function formatLocalTime(isoStr: string, tz?: string): string {
+  if (!isoStr) { return ''; }
+  const d = new Date(isoStr);
+  if (tz) {
+    try {
+      return d.toLocaleString('en-US', {
+        timeZone: tz, weekday: 'short', month: 'short', day: 'numeric',
+        hour: 'numeric', minute: '2-digit', hour12: true,
+      });
+    } catch { /* fall through */ }
+  }
+  return d.toLocaleString('en-US', {
+    weekday: 'short', month: 'short', day: 'numeric',
+    hour: 'numeric', minute: '2-digit', hour12: true,
+  });
+}
+
+function formatHourLabel(isoStr: string, tz?: string): string {
+  if (!isoStr) { return ''; }
+  const d = new Date(isoStr);
+  if (tz) {
+    try {
+      return d.toLocaleString('en-US', { timeZone: tz, weekday: 'short', hour: 'numeric', hour12: true });
+    } catch { /* fall through */ }
+  }
+  const h = d.getHours();
+  const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+  return `${days[d.getDay()]} ${h === 0 ? '12a' : h < 12 ? `${h}a` : h === 12 ? '12p' : `${h - 12}p`}`;
+}
+
+function ProgressBar({ value, max, color, label }: { value: number; max: number; color: string; label: string }) {
+  const pct = max > 0 ? Math.min((value / max) * 100, 100) : 0;
+  const isHigh = pct > 80;
+  return (
+    <div style={{ marginBottom: '8px' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '3px' }}>
+        <span style={{ fontSize: '11px', color: C.muted }}>{label}</span>
+        <span style={{ fontSize: '11px', color: isHigh ? C.amber : C.text, fontFamily: 'monospace' }}>
+          {formatTokens(value)} / {formatTokens(max)}
+        </span>
+      </div>
+      <div style={{ height: '6px', background: C.mutedDark, borderRadius: '3px', overflow: 'hidden' }}>
+        <div style={{
+          height: '100%', width: `${pct}%`, borderRadius: '3px',
+          background: isHigh ? C.amber : color,
+          transition: 'width 0.3s ease',
+        }} />
+      </div>
+    </div>
+  );
+}
+
+type RateView = 'weekly' | 'session';
+
+function RateUsageLimits({ rateUsage }: { rateUsage: RateUsageStats }) {
+  const [view, setView] = useState<RateView>('weekly');
+  const timezone = useContext(TimezoneContext);
+
+  // Aggregate weekly buckets into daily summaries for the weekly overview chart
+  const dailyAgg = new Map<string, { day: string; tokens: number; cost: number; calls: number }>();
+  for (const b of rateUsage.weeklyBuckets) {
+    const dayKey = formatHourLabel(b.start, timezone).split(' ')[0]; // e.g. "Mon"
+    const d = new Date(b.start);
+    const dateStr = timezone
+      ? (() => { try { return d.toLocaleDateString('en-US', { timeZone: timezone, weekday: 'short' }); } catch { return dayKey; } })()
+      : dayKey;
+    const existing = dailyAgg.get(dateStr);
+    if (existing) { existing.tokens += b.tokens; existing.cost += b.cost; existing.calls += b.calls; }
+    else { dailyAgg.set(dateStr, { day: dateStr, tokens: b.tokens, cost: b.cost, calls: b.calls }); }
+  }
+  const dailyData = Array.from(dailyAgg.values());
+
+  // Reasonable reference limits (based on typical API tier limits)
+  // These serve as visual benchmarks, not hard enforcement
+  const WEEKLY_TOKEN_REF = 50_000_000;   // 50M tokens/week reference
+  const HOURLY_TOKEN_REF = 2_000_000;    // 2M tokens/hour reference
+  const SESSION_TOKEN_REF = 10_000_000;  // 10M tokens/session reference
+
+  return (
+    <Card>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+        <p style={{ fontSize: '11px', fontWeight: 600, color: C.muted, textTransform: 'uppercase', letterSpacing: '0.05em', margin: 0 }}>
+          Rate Usage
+        </p>
+        <div style={{ display: 'flex', gap: '4px' }}>
+          {(['weekly', 'session'] as RateView[]).map(v => (
+            <button key={v} onClick={() => setView(v)} style={{
+              padding: '3px 10px', borderRadius: '6px', fontSize: '11px', fontWeight: 500, cursor: 'pointer',
+              border: `1px solid ${view === v ? C.primary : C.border}`,
+              background: view === v ? `${C.primary}22` : 'transparent',
+              color: view === v ? C.primary : C.muted,
+            }}>{v === 'weekly' ? 'Weekly' : 'Sessions'}</button>
+          ))}
+        </div>
+      </div>
+
+      {view === 'weekly' && (
+        <>
+          {/* Weekly summary */}
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '8px', marginBottom: '14px' }}>
+            <div style={{ textAlign: 'center' }}>
+              <p style={{ fontSize: '16px', fontWeight: 700, color: C.text, margin: 0 }}>{formatTokens(rateUsage.weeklyTokens)}</p>
+              <p style={{ fontSize: '10px', color: C.muted, margin: '2px 0 0', textTransform: 'uppercase' }}>Tokens this week</p>
+            </div>
+            <div style={{ textAlign: 'center' }}>
+              <p style={{ fontSize: '16px', fontWeight: 700, color: C.text, margin: 0 }}>{formatCost(rateUsage.weeklyCost)}</p>
+              <p style={{ fontSize: '10px', color: C.muted, margin: '2px 0 0', textTransform: 'uppercase' }}>Cost this week</p>
+            </div>
+            <div style={{ textAlign: 'center' }}>
+              <p style={{ fontSize: '16px', fontWeight: 700, color: C.text, margin: 0 }}>{rateUsage.weeklyCalls.toLocaleString()}</p>
+              <p style={{ fontSize: '10px', color: C.muted, margin: '2px 0 0', textTransform: 'uppercase' }}>API calls</p>
+            </div>
+          </div>
+
+          {/* Progress bars */}
+          <ProgressBar value={rateUsage.weeklyTokens} max={WEEKLY_TOKEN_REF} color={C.primary} label="Weekly token usage" />
+          <ProgressBar value={rateUsage.currentHourTokens} max={HOURLY_TOKEN_REF} color={C.blue} label="Current hour" />
+
+          {/* Daily breakdown chart */}
+          {dailyData.length > 0 && (
+            <div style={{ height: '120px', marginTop: '10px' }}>
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={dailyData} margin={{ top: 5, right: 5, left: -25, bottom: 0 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke={C.border} vertical={false} />
+                  <XAxis dataKey="day" tick={{ fontSize: 10, fill: C.muted }} axisLine={false} tickLine={false} />
+                  <YAxis tick={{ fontSize: 10, fill: C.muted }} axisLine={false} tickLine={false} tickFormatter={(v: number) => formatTokens(v)} />
+                  <RechartsTooltip
+                    contentStyle={{ background: C.card, border: `1px solid ${C.border}`, borderRadius: '8px', fontSize: '12px', color: C.text }}
+                    formatter={(v: number) => [formatTokens(v), 'Tokens']}
+                  />
+                  <Bar dataKey="tokens" fill={C.primary} radius={[3, 3, 0, 0]} opacity={0.8} />
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          )}
+
+          {/* Reset time */}
+          <div style={{ marginTop: '10px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <span style={{ fontSize: '10px', color: C.muted }}>
+              Resets: {formatLocalTime(rateUsage.weeklyResetAt, timezone)}
+            </span>
+            {rateUsage.peakHourlyTokens > 0 && (
+              <span style={{ fontSize: '10px', color: C.muted }}>
+                Peak hour: {formatTokens(rateUsage.peakHourlyTokens)}
+              </span>
+            )}
+          </div>
+        </>
+      )}
+
+      {view === 'session' && (
+        <>
+          {rateUsage.sessionBuckets.length === 0 ? (
+            <p style={{ color: C.muted, fontSize: '12px', textAlign: 'center', padding: '16px 0' }}>
+              No sessions active today.
+            </p>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+              {rateUsage.sessionBuckets.slice(0, 10).map((s, i) => {
+                const startLabel = formatLocalTime(s.start, timezone);
+                const endLabel = formatLocalTime(s.end, timezone);
+                return (
+                  <div key={i} style={{ borderBottom: i < rateUsage.sessionBuckets.length - 1 ? `1px solid ${C.border}` : 'none', paddingBottom: '8px' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '4px' }}>
+                      <span style={{ fontSize: '11px', color: C.text, fontWeight: 500 }}>
+                        Session {i + 1}
+                      </span>
+                      <span style={{ fontSize: '10px', color: C.muted }}>
+                        {s.calls} calls · {formatCost(s.cost)}
+                      </span>
+                    </div>
+                    <ProgressBar value={s.tokens} max={SESSION_TOKEN_REF} color={C.blue} label={`${startLabel} → ${endLabel}`} />
+                  </div>
+                );
+              })}
+              {rateUsage.sessionBuckets.length > 10 && (
+                <p style={{ fontSize: '10px', color: C.muted, textAlign: 'right' }}>
+                  +{rateUsage.sessionBuckets.length - 10} more sessions
+                </p>
+              )}
+            </div>
+          )}
+        </>
+      )}
+    </Card>
+  );
+}
+
 // ── Loading / Error ───────────────────────────────────────────────────────────
 
 function Loading() {
@@ -338,6 +529,13 @@ export function DashboardTab({ stats, error, onRefresh, onOpenSession, onExportC
         <StatCard label="Total Tokens"    value={formatTokens(stats.totalTokens)} />
         <StatCard label="Estimated Cost"  value={formatCost(stats.estimatedCost)} subtitle="based on API pricing" />
       </div>
+
+      {/* Rate Usage Limits — timezone-aware weekly + session view */}
+      {stats.rateUsage && (
+        <div style={{ marginBottom: '12px' }}>
+          <RateUsageLimits rateUsage={stats.rateUsage} />
+        </div>
+      )}
 
       <div style={{ display: 'grid', gridTemplateColumns: hasModels ? '2fr 1fr' : '1fr', gap: '12px', marginBottom: '12px' }}>
         <UsageOverTime data={stats.dailyActivity || []} />

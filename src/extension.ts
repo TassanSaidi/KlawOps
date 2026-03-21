@@ -30,12 +30,23 @@ export function activate(context: vscode.ExtensionContext): void {
   );
 
   // ── File watcher — refresh tree + status bar on any session write ─────────
+  // Debounced: coalesce rapid writes into a single refresh cycle.
   const projectsDir = path.join(getConfiguredClaudeDir(), 'projects');
   const watcher = vscode.workspace.createFileSystemWatcher(
     new vscode.RelativePattern(vscode.Uri.file(projectsDir), '**/*.jsonl')
   );
-  watcher.onDidCreate(() => { sessionTree.refresh(); statusBar.update(); pushUpdate(); });
-  watcher.onDidChange(() => { statusBar.update(); pushUpdate(); });
+  let watcherDebounce: ReturnType<typeof setTimeout> | null = null;
+  const WATCHER_DEBOUNCE_MS = 1_000;
+  function onSessionFileChange(isCreate: boolean) {
+    if (watcherDebounce) { clearTimeout(watcherDebounce); }
+    watcherDebounce = setTimeout(() => {
+      if (isCreate) { sessionTree.refresh(); }
+      statusBar.update();
+      pushUpdate();
+    }, WATCHER_DEBOUNCE_MS);
+  }
+  watcher.onDidCreate(() => onSessionFileChange(true));
+  watcher.onDidChange(() => onSessionFileChange(false));
   context.subscriptions.push(watcher);
 
   // ── Custom skills file watcher ────────────────────────────────────────────

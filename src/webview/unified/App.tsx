@@ -165,6 +165,11 @@ const FETCH_MAP: Record<string, FetchSpec> = {
     responseType: 'SKILLS_STATS_DATA',
     errorType:    'SKILLS_STATS_ERROR',
   },
+  REQUEST_COST_ANALYSIS: {
+    url:          (m) => `/api/sessions/${m.sessionId}/cost-analysis`,
+    responseType: 'COST_ANALYSIS_DATA',
+    errorType:    'COST_ANALYSIS_ERROR',
+  },
 };
 
 async function standaloneRequest(msg: Record<string, unknown>): Promise<void> {
@@ -292,13 +297,25 @@ export default function App() {
 
     window.addEventListener('message', handler);
 
-    // Initial data loads
+    // Only load dashboard on init — other tabs are lazy-loaded on first visit
     requestDashboard();
-    requestSessions();
-    requestSkillsStats();
 
     return () => window.removeEventListener('message', handler);
-  }, [requestDashboard, requestSessions, requestSkillsStats]);
+  }, [requestDashboard]);
+
+  // Lazy-load: fetch data when switching to a tab that hasn't been loaded yet
+  useEffect(() => {
+    if (activeTab === 'sessions' && !sessionList && !sessionListError) {
+      requestSessions();
+    }
+    if (activeTab === 'skills' && !skillsStats && !skillsError) {
+      requestSkillsStats();
+    }
+    // Release heavy session detail data when leaving sessions tab
+    if (activeTab !== 'sessions') {
+      setSessionDetail(null);
+    }
+  }, [activeTab, sessionList, sessionListError, skillsStats, skillsError, requestSessions, requestSkillsStats]);
 
   // When selected session changes, load its detail
   useEffect(() => {

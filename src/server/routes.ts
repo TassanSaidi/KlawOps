@@ -6,6 +6,7 @@ import {
   getSessionDetailV2,
   getSkillAgentStats,
   generateSessionsCsv,
+  analyzeCostOptimization,
 } from '../data/reader';
 import type { SkillAgentStatsOptions } from '../data/types';
 
@@ -28,6 +29,16 @@ export function createApiRouter(): Router {
       const limit  = req.query.limit  ? Number(req.query.limit)  : 50;
       const offset = req.query.offset ? Number(req.query.offset) : 0;
       res.json(getSessionList({ query, limit, offset }));
+    } catch (err) {
+      res.status(500).json({ error: String(err) });
+    }
+  });
+
+  // POST /api/sessions/:id/cost-analysis
+  router.get('/sessions/:id/cost-analysis', async (req: Request, res: Response) => {
+    try {
+      const analysis = await analyzeCostOptimization(req.params.id);
+      res.json(analysis);
     } catch (err) {
       res.status(500).json({ error: String(err) });
     }

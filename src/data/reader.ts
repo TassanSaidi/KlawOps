@@ -2,6 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import os from 'os';
 import readline from 'readline';
+import https from 'https';
 import { calculateCost, getModelDisplayName } from '../lib/pricing';
 import type {
   StatsCache,
@@ -28,6 +29,9 @@ import type {
   CustomSkillsFile,
   ToolMetrics,
   ToolMetricEntry,
+  RateUsageStats,
+  RateUsageBucket,
+  CostAnalysis,
 } from './types';
 
 // ── Data directory ────────────────────────────────────────────────────────────
@@ -64,15 +68,33 @@ function getProjectsDir(): string {
 
 // ── Session metadata cache ────────────────────────────────────────────────────
 // Avoids re-parsing unchanged JSONL files on every getSessions()/getProjects() call.
+// LRU-capped to prevent unbounded memory growth on large session stores.
 
+const SESSION_META_CACHE_MAX = 500;
 const _sessionMetaCache = new Map<string, { mtimeMs: number; info: SessionInfo }>();
+
+function evictOldestCacheEntries(): void {
+  if (_sessionMetaCache.size <= SESSION_META_CACHE_MAX) { return; }
+  const overflow = _sessionMetaCache.size - SESSION_META_CACHE_MAX;
+  const iter = _sessionMetaCache.keys();
+  for (let i = 0; i < overflow; i++) {
+    const key = iter.next().value;
+    if (key !== undefined) { _sessionMetaCache.delete(key); }
+  }
+}
 
 function getCachedSessionInfo(filePath: string, projectId: string, projectName: string): SessionInfo {
   const stat = fs.statSync(filePath);
   const cached = _sessionMetaCache.get(filePath);
-  if (cached && cached.mtimeMs === stat.mtimeMs) { return cached.info; }
+  if (cached && cached.mtimeMs === stat.mtimeMs) {
+    // Move to end for LRU ordering
+    _sessionMetaCache.delete(filePath);
+    _sessionMetaCache.set(filePath, cached);
+    return cached.info;
+  }
   const info = parseSessionFile(filePath, projectId, projectName);
   _sessionMetaCache.set(filePath, { mtimeMs: stat.mtimeMs, info });
+  evictOldestCacheEntries();
   return info;
 }
 
@@ -544,7 +566,9 @@ export function searchSessions(query: string, limit = 50): SessionInfo[] {
         continue;
       }
 
-      // Fall back to full-text content search
+      // Fall back to full-text content search — skip files larger than 512KB to bound RAM
+      const fileStat = fs.statSync(filePath);
+      if (fileStat.size > 512 * 1024) { continue; }
       const lines = fs.readFileSync(filePath, 'utf-8').split('\n').filter(Boolean);
       let hasMatch = false;
 
@@ -730,6 +754,163 @@ function computeSupplementalStats(afterDate: string): SupplementalStats {
   return result;
 }
 
+// ── Rate usage stats ──────────────────────────────────────────────────────────
+// Computes token/cost/call usage bucketed by hour for the current week, plus
+// per-session buckets for today's sessions. Timezone parameter (IANA string)
+// determines the week boundary (Monday 00:00 local).
+
+function computeRateUsageStats(timezoneOffsetMinutes?: number): RateUsageStats {
+  const tzOff = timezoneOffsetMinutes ?? 0;
+  const now = new Date();
+
+  // Compute "now" in the target timezone by shifting UTC
+  const nowLocal = new Date(now.getTime() + tzOff * 60_000);
+  // Week starts Monday 00:00 local
+  const dayOfWeek = nowLocal.getUTCDay(); // 0=Sun..6=Sat
+  const daysSinceMonday = dayOfWeek === 0 ? 6 : dayOfWeek - 1;
+  const weekStartLocal = new Date(Date.UTC(
+    nowLocal.getUTCFullYear(), nowLocal.getUTCMonth(), nowLocal.getUTCDate() - daysSinceMonday,
+    0, 0, 0, 0,
+  ));
+  // Convert week start back to UTC
+  const weekStartUtc = new Date(weekStartLocal.getTime() - tzOff * 60_000);
+  // Next Monday 00:00 local → UTC
+  const weekEndLocal = new Date(weekStartLocal.getTime() + 7 * 86_400_000);
+  const weekEndUtc = new Date(weekEndLocal.getTime() - tzOff * 60_000);
+
+  // Today 00:00 local → UTC
+  const todayStartLocal = new Date(Date.UTC(
+    nowLocal.getUTCFullYear(), nowLocal.getUTCMonth(), nowLocal.getUTCDate(),
+    0, 0, 0, 0,
+  ));
+  const todayStartUtc = new Date(todayStartLocal.getTime() - tzOff * 60_000);
+
+  // Current hour start in UTC
+  const currentHourStart = new Date(now);
+  currentHourStart.setMinutes(0, 0, 0);
+
+  // Hourly buckets: from weekStartUtc to now
+  const hourlyMap = new Map<number, { tokens: number; cost: number; calls: number }>();
+  // Per-session buckets for today
+  const sessionMap = new Map<string, { start: string; end: string; tokens: number; cost: number; calls: number }>();
+
+  let weeklyTokens = 0;
+  let weeklyCost = 0;
+  let weeklyCalls = 0;
+  let currentHourTokens = 0;
+
+  const projectsDir = getProjectsDir();
+  if (fs.existsSync(projectsDir)) {
+    for (const entry of fs.readdirSync(projectsDir)) {
+      const projectPath = path.join(projectsDir, entry);
+      try { if (!fs.statSync(projectPath).isDirectory()) { continue; } } catch { continue; }
+
+      for (const f of fs.readdirSync(projectPath).filter(f => f.endsWith('.jsonl'))) {
+        const filePath = path.join(projectPath, f);
+        try {
+          // Skip files untouched before the week started
+          if (fs.statSync(filePath).mtimeMs < weekStartUtc.getTime()) { continue; }
+        } catch { continue; }
+
+        const sessionId = f.replace(/\.jsonl$/, '');
+        let lines: string[];
+        try { lines = fs.readFileSync(filePath, 'utf-8').split('\n').filter(Boolean); } catch { continue; }
+
+        let sessionFirstTs = '';
+        let sessionLastTs = '';
+        let sessionTokens = 0;
+        let sessionCost = 0;
+        let sessionCalls = 0;
+
+        for (const line of lines) {
+          try {
+            const msg = JSON.parse(line) as SessionMessage;
+            if (msg.type !== 'assistant' || !msg.message?.usage || !msg.timestamp) { continue; }
+
+            const msgTime = new Date(msg.timestamp).getTime();
+            if (msgTime < weekStartUtc.getTime() || msgTime > now.getTime()) { continue; }
+
+            const u = msg.message.usage;
+            const model = msg.message.model || '';
+            const tokens = (u.input_tokens || 0) + (u.output_tokens || 0) +
+              (u.cache_read_input_tokens || 0) + (u.cache_creation_input_tokens || 0);
+            const cost = calculateCost(model, u.input_tokens || 0, u.output_tokens || 0,
+              u.cache_creation_input_tokens || 0, u.cache_read_input_tokens || 0);
+
+            weeklyTokens += tokens;
+            weeklyCost += cost;
+            weeklyCalls++;
+
+            // Hourly bucket (keyed by hour offset from weekStart)
+            const hourOffset = Math.floor((msgTime - weekStartUtc.getTime()) / 3_600_000);
+            const existing = hourlyMap.get(hourOffset);
+            if (existing) { existing.tokens += tokens; existing.cost += cost; existing.calls++; }
+            else { hourlyMap.set(hourOffset, { tokens, cost, calls: 1 }); }
+
+            // Current hour
+            if (msgTime >= currentHourStart.getTime()) {
+              currentHourTokens += tokens;
+            }
+
+            // Per-session for today
+            if (msgTime >= todayStartUtc.getTime()) {
+              if (!sessionFirstTs) { sessionFirstTs = msg.timestamp; }
+              sessionLastTs = msg.timestamp;
+              sessionTokens += tokens;
+              sessionCost += cost;
+              sessionCalls++;
+            }
+          } catch { /* skip */ }
+        }
+
+        if (sessionCalls > 0 && sessionFirstTs) {
+          sessionMap.set(sessionId, {
+            start: sessionFirstTs,
+            end: sessionLastTs || sessionFirstTs,
+            tokens: sessionTokens,
+            cost: sessionCost,
+            calls: sessionCalls,
+          });
+        }
+      }
+    }
+  }
+
+  // Build weekly buckets
+  const weeklyBuckets: RateUsageBucket[] = [];
+  const totalHours = Math.ceil((now.getTime() - weekStartUtc.getTime()) / 3_600_000);
+  for (let h = 0; h < totalHours; h++) {
+    const bucketStart = new Date(weekStartUtc.getTime() + h * 3_600_000);
+    const bucketEnd = new Date(bucketStart.getTime() + 3_600_000);
+    const data = hourlyMap.get(h);
+    weeklyBuckets.push({
+      start: bucketStart.toISOString(),
+      end: bucketEnd.toISOString(),
+      tokens: data?.tokens ?? 0,
+      cost: data?.cost ?? 0,
+      calls: data?.calls ?? 0,
+    });
+  }
+
+  // Session buckets for today
+  const sessionBuckets: RateUsageBucket[] = Array.from(sessionMap.entries())
+    .map(([_id, s]) => ({ start: s.start, end: s.end, tokens: s.tokens, cost: s.cost, calls: s.calls }))
+    .sort((a, b) => b.tokens - a.tokens);
+
+  const peakHourlyTokens = weeklyBuckets.reduce((max, b) => Math.max(max, b.tokens), 0);
+
+  return {
+    weeklyBuckets,
+    sessionBuckets,
+    weeklyTokens,
+    weeklyCost,
+    weeklyCalls,
+    weeklyResetAt: weekEndUtc.toISOString(),
+    peakHourlyTokens,
+    currentHourTokens,
+  };
+}
+
 // ── Dashboard stats ───────────────────────────────────────────────────────────
 
 export function getDashboardStats(): DashboardStats {
@@ -800,6 +981,9 @@ export function getDashboardStats(): DashboardStats {
     mergedHourCounts[hour] = (mergedHourCounts[hour] || 0) + count;
   }
 
+  // Rate usage stats — lightweight scan of this week's sessions
+  const rateUsage = computeRateUsageStats();
+
   return {
     totalSessions: (stats?.totalSessions || 0) + supplemental.totalSessions,
     totalMessages: (stats?.totalMessages || 0) + supplemental.totalMessages,
@@ -813,6 +997,7 @@ export function getDashboardStats(): DashboardStats {
     longestSession: stats?.longestSession || { sessionId: '', duration: 0, messageCount: 0, timestamp: '' },
     projectCount: projects.length,
     recentSessions: getSessions(10),
+    rateUsage,
   };
 }
 
@@ -1266,9 +1451,9 @@ export async function getSessionDetailV2(sessionId: string): Promise<SessionDeta
 
     // ── Tool metrics accumulators ─────────────────────────────────────────
     // Maps tool_use_id → { name, timestamp, inputEstTokens }
-    const pendingTools = new Map<string, { name: string; ts: string; inputEst: number }>();
-    // Per-tool accumulator: name → { count, totalMs, tokens }
-    const toolAccum = new Map<string, { count: number; totalMs: number; tokens: number }>();
+    const pendingTools = new Map<string, { name: string; ts: string; inputEst: number; model: string; actualTokens: number; actualCost: number }>();
+    // Per-tool accumulator: name → { count, totalMs, tokens, actualTokens, actualCost, models }
+    const toolAccum = new Map<string, { count: number; totalMs: number; tokens: number; actualTokens: number; actualCost: number; models: Set<string> }>();
 
     const fileStream = fs.createReadStream(filePath);
     const rl = readline.createInterface({ input: fileStream, crlfDelay: Infinity });
@@ -1298,10 +1483,13 @@ export async function getSessionDetailV2(sessionId: string): Promise<SessionDeta
 
                 if (pending && msg.timestamp && pending.ts) {
                   const durationMs = Math.max(0, new Date(msg.timestamp).getTime() - new Date(pending.ts).getTime());
-                  const existing = toolAccum.get(pending.name) ?? { count: 0, totalMs: 0, tokens: 0 };
-                  existing.count   += 1;
-                  existing.totalMs += durationMs;
-                  existing.tokens  += pending.inputEst + outputEst;
+                  const existing = toolAccum.get(pending.name) ?? { count: 0, totalMs: 0, tokens: 0, actualTokens: 0, actualCost: 0, models: new Set<string>() };
+                  existing.count        += 1;
+                  existing.totalMs      += durationMs;
+                  existing.tokens       += pending.inputEst + outputEst;
+                  existing.actualTokens += pending.actualTokens;
+                  existing.actualCost   += pending.actualCost;
+                  if (pending.model) { existing.models.add(pending.model); }
                   toolAccum.set(pending.name, existing);
                   pendingTools.delete(toolUseId!);
                 }
@@ -1328,8 +1516,27 @@ export async function getSessionDetailV2(sessionId: string): Promise<SessionDeta
                   const toolName = cc.name as string;
                   const inputEst = Math.round(JSON.stringify(cc.input ?? {}).length / 4);
                   toolCalls.push({ name: toolName, id: toolId });
+                  // Attribute the assistant turn's API tokens/cost to each tool_use in it
+                  const turnModel = msg.message?.model || '';
+                  const turnUsage = msg.message?.usage;
+                  const toolCountInTurn = Array.isArray(content)
+                    ? (content as Record<string, unknown>[]).filter(b => b && typeof b === 'object' && (b as Record<string, unknown>).type === 'tool_use').length
+                    : 1;
+                  let actualTokens = 0;
+                  let actualCost = 0;
+                  if (turnUsage && toolCountInTurn > 0) {
+                    const total = (turnUsage.input_tokens || 0) + (turnUsage.output_tokens || 0) +
+                      (turnUsage.cache_read_input_tokens || 0) + (turnUsage.cache_creation_input_tokens || 0);
+                    // Split proportionally across tools in this turn
+                    actualTokens = Math.round(total / toolCountInTurn);
+                    actualCost = calculateCost(turnModel,
+                      Math.round((turnUsage.input_tokens || 0) / toolCountInTurn),
+                      Math.round((turnUsage.output_tokens || 0) / toolCountInTurn),
+                      Math.round((turnUsage.cache_creation_input_tokens || 0) / toolCountInTurn),
+                      Math.round((turnUsage.cache_read_input_tokens || 0) / toolCountInTurn));
+                  }
                   if (toolId && msg.timestamp) {
-                    pendingTools.set(toolId, { name: toolName, ts: msg.timestamp, inputEst });
+                    pendingTools.set(toolId, { name: toolName, ts: msg.timestamp, inputEst, model: turnModel, actualTokens, actualCost });
                   }
                 }
               }
@@ -1357,8 +1564,11 @@ export async function getSessionDetailV2(sessionId: string): Promise<SessionDeta
         totalDurationMs: a.totalMs,
         avgDurationMs:   a.count > 0 ? Math.round(a.totalMs / a.count) : 0,
         estimatedTokens: a.tokens,
+        actualTokens:    a.actualTokens,
+        actualCost:      a.actualCost,
+        models:          Array.from(a.models),
       }))
-      .sort((x, y) => y.totalDurationMs - x.totalDurationMs);
+      .sort((x, y) => y.actualTokens - x.actualTokens || y.totalDurationMs - x.totalDurationMs);
 
     const toolMetrics: ToolMetrics = {
       totalDurationMs:  byTool.reduce((s, e) => s + e.totalDurationMs, 0),
@@ -1379,7 +1589,9 @@ export function getSessionList(opts?: { query?: string; limit?: number; offset?:
   total: number;
 } {
   const { query, limit = 50, offset = 0 } = opts || {};
-  const all = query ? searchSessions(query, 1000) : getSessions(1000, 0);
+  // Cap the backing scan — no need to load 1000 sessions when only showing 50
+  const scanLimit = Math.min(offset + limit + 50, 500);
+  const all = query ? searchSessions(query, scanLimit) : getSessions(scanLimit, 0);
   return {
     sessions: all.slice(offset, offset + limit),
     total: all.length,
@@ -1418,4 +1630,136 @@ export function generateSessionsCsv(): string {
     csvEscape(s.firstMessage || ''),
   ]);
   return [headers.join(','), ...rows.map(r => r.join(','))].join('\n');
+}
+
+// ── Cost optimization analysis via Claude API ─────────────────────────────────
+
+function getAnthropicApiKey(): string | null {
+  return process.env.ANTHROPIC_API_KEY || null;
+}
+
+function callAnthropicApi(body: string): Promise<string> {
+  const apiKey = getAnthropicApiKey();
+  if (!apiKey) { return Promise.reject(new Error('ANTHROPIC_API_KEY not set. Set it in your environment to use cost analysis.')); }
+
+  return new Promise((resolve, reject) => {
+    const data = Buffer.from(body, 'utf-8');
+    const req = https.request({
+      hostname: 'api.anthropic.com',
+      path: '/v1/messages',
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
+        'Content-Length': data.length,
+      },
+    }, (res) => {
+      const chunks: Buffer[] = [];
+      res.on('data', (chunk: Buffer) => chunks.push(chunk));
+      res.on('end', () => {
+        const responseText = Buffer.concat(chunks).toString('utf-8');
+        try {
+          const json = JSON.parse(responseText);
+          if (json.error) { reject(new Error(json.error.message || 'API error')); return; }
+          const text = json.content?.[0]?.text || '';
+          resolve(text);
+        } catch { reject(new Error('Failed to parse API response')); }
+      });
+    });
+    req.on('error', reject);
+    req.setTimeout(30_000, () => { req.destroy(); reject(new Error('API request timed out')); });
+    req.write(data);
+    req.end();
+  });
+}
+
+export async function analyzeCostOptimization(sessionId: string): Promise<CostAnalysis> {
+  const detail = await getSessionDetailV2(sessionId);
+  if (!detail) { throw new Error('Session not found'); }
+
+  const toolData = detail.toolMetrics.byTool.map(t => ({
+    tool: t.name,
+    calls: t.count,
+    tokens: t.actualTokens,
+    cost: Math.round(t.actualCost * 10000) / 10000,
+    models: t.models,
+    avgDurationMs: t.avgDurationMs,
+  }));
+
+  const skillData = (detail.skillsInSession || []).map(s => ({
+    skill: s.name,
+    invocations: s.invocations,
+    tokens: s.tokens,
+    cost: Math.round(s.cost * 10000) / 10000,
+  }));
+
+  const sessionSummary = {
+    totalCost: Math.round(detail.estimatedCost * 10000) / 10000,
+    totalTokens: detail.totalInputTokens + detail.totalOutputTokens + detail.totalCacheReadTokens + detail.totalCacheWriteTokens,
+    models: detail.models,
+    duration: detail.duration,
+    toolCallCount: detail.toolCallCount,
+    messageCount: detail.messageCount,
+  };
+
+  const prompt = `Analyze this Claude Code session's tool and skill usage for cost optimization. Identify which tools or operations could have used a cheaper model (e.g. Haiku instead of Sonnet/Opus) without sacrificing quality.
+
+Session summary: ${JSON.stringify(sessionSummary)}
+
+Per-tool breakdown:
+${JSON.stringify(toolData, null, 2)}
+
+Skills used:
+${JSON.stringify(skillData, null, 2)}
+
+Model pricing reference:
+- Opus: $15/M input, $75/M output (most capable, use for complex reasoning)
+- Sonnet: $3/M input, $15/M output (balanced, good for most coding tasks)
+- Haiku: $0.80/M input, $4/M output (fastest, good for simple/mechanical tasks)
+
+Respond ONLY with a JSON object (no markdown fences) in this exact format:
+{
+  "suggestions": [
+    {
+      "toolName": "ToolName",
+      "currentModel": "Current model family",
+      "suggestedModel": "Cheaper model",
+      "reason": "Brief reason why this tool could use a cheaper model",
+      "estimatedSavings": 60,
+      "tokenCount": 12345,
+      "callCount": 5
+    }
+  ],
+  "summary": "One paragraph summary of cost optimization opportunities",
+  "totalPotentialSavings": "e.g. ~$0.45 (30%)"
+}
+
+Only suggest downgrades for tools where quality would genuinely not suffer. Tools like Read, Glob, Grep, Write, Edit, Bash (for simple commands) are often fine with Haiku. Complex reasoning, planning, and code generation usually need Sonnet or Opus. If no meaningful savings are possible, return empty suggestions array with a summary explaining why.`;
+
+  const body = JSON.stringify({
+    model: 'claude-haiku-4-5-20251001',
+    max_tokens: 2048,
+    messages: [{ role: 'user', content: prompt }],
+  });
+
+  const response = await callAnthropicApi(body);
+
+  try {
+    // Try to extract JSON from the response (handles markdown fences too)
+    const jsonMatch = response.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) { throw new Error('No JSON in response'); }
+    const analysis = JSON.parse(jsonMatch[0]) as CostAnalysis;
+    // Validate structure
+    if (!Array.isArray(analysis.suggestions)) { analysis.suggestions = []; }
+    if (!analysis.summary) { analysis.summary = 'Analysis complete.'; }
+    if (!analysis.totalPotentialSavings) { analysis.totalPotentialSavings = 'N/A'; }
+    return analysis;
+  } catch {
+    return {
+      suggestions: [],
+      summary: response.slice(0, 500),
+      totalPotentialSavings: 'N/A',
+    };
+  }
 }
